@@ -5,7 +5,7 @@ import os
 import pickle
 import sys
 
-import exptag
+#import exptag
 import ipdb
 import numpy as np
 from atari_wrappers import make_atari, wrap_deepmind
@@ -204,7 +204,9 @@ if __name__ == '__main__':
 
 
     args = parser.parse_args().__dict__
-    folder = exptag.get_last_experiment_folder_by_tag(args['tag'])
+    #folder = exptag.get_last_experiment_folder_by_tag(args['tag'])
+    # Give last experiment folder in the tag
+    folder = args['tag']
 
     def date_from_folder(folder):
         assert folder.startswith('openai-')
@@ -235,12 +237,12 @@ if __name__ == '__main__':
     env.reset()
     un_env = env.unwrapped
     rend_shape = un_env.render(mode='rgb_array').shape
-    episodes = EpisodeIterator(filenames).iterate()
+    episodes = EpisodeIterator(filenames)
     if args['kind'] == 'movie':
         import imageio
         import time
-        for i, episode in enumerate(episodes):
-            filename = os.path.expanduser('~/tmp/movie_{}.mp4'.format(time.time()))
+        for i, episode in enumerate(episodes.iterate()):
+            filename = os.path.expanduser('~/rnd_movies/movie_{}.mp4'.format(time.time()))
             imageio.mimwrite(filename, episode["obs"], fps=30)
             print(filename)
 

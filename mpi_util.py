@@ -43,10 +43,10 @@ def guess_available_gpus(n_gpus=None):
     if n_gpus is not None:
         return list(range(n_gpus))
     if 'CUDA_VISIBLE_DEVICES' in os.environ:
-        cuda_visible_divices = os.environ['CUDA_VISIBLE_DEVICES']
-        cuda_visible_divices = cuda_visible_divices.split(',')
-        return [int(n) for n in cuda_visible_divices]
-    if 'RCALL_NUM_GPU' not in os.environ:
+        cuda_visible_devices = os.environ['CUDA_VISIBLE_DEVICES']
+        cuda_visible_devices = cuda_visible_devices.split(',')
+        return [int(n) for n in cuda_visible_devices]
+    if 'RCALL_NUM_GPU' in os.environ:
         n_gpus = int(os.environ['RCALL_NUM_GPU'])
         return list(range(n_gpus))
     nvidia_dir = '/proc/driver/nvidia/gpus/'
