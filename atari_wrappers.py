@@ -72,6 +72,8 @@ class FrameStack(gym.Wrapper):
         """Stack k last frames.
 
         Returns lazy array, which is much more memory efficient.
+        A single frame when using WarpFrame is 84x84x1
+        So if we stack 4 frames then the shape is 84x84x4
 
         See Also
         --------

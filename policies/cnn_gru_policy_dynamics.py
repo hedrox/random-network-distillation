@@ -9,7 +9,9 @@ from mpi_util import RunningMeanStd
 
 def to2d(x):
     size = 1
-    for shapel in x.get_shape()[1:]: size *= shapel.value
+    for shapel in x.get_shape()[1:]:
+        size *= shapel.value
+
     return tf.reshape(x, (-1, size))
 
 
@@ -40,13 +42,15 @@ class GRUCell(tf.nn.rnn_cell.RNNCell):
         h = m * h + (1.0 - m) * htil
         return h, h
 
+
 class CnnGruPolicy(StochasticPolicy):
     def __init__(self, scope, ob_space, ac_space,
-                 policy_size='normal', maxpool=False, extrahid=True, hidsize=128, memsize=128, rec_gate_init=0.0,
+                 policy_size='normal', maxpool=False, extrahid=True,
+                 hidsize=128, memsize=128, rec_gate_init=0.0,
                  update_ob_stats_independently_per_gpu=True,
                  proportion_of_exp_used_for_predictor_update=1.,
-                 dynamics_bonus = False,
-                 ):
+                 dynamics_bonus = False):
+
         StochasticPolicy.__init__(self, scope, ob_space, ac_space)
         self.proportion_of_exp_used_for_predictor_update = proportion_of_exp_used_for_predictor_update
         enlargement = {
@@ -61,7 +65,8 @@ class CnnGruPolicy(StochasticPolicy):
         hidsize *= enlargement
         convfeat = 16*enlargement
         self.ob_rms = RunningMeanStd(shape=list(ob_space.shape[:2])+[1], use_mpi=not update_ob_stats_independently_per_gpu)
-        ph_istate = tf.placeholder(dtype=tf.float32,shape=(None,memsize), name='state')
+
+        ph_istate = tf.placeholder(dtype=tf.float32, shape=(None, memsize), name='state')
         pdparamsize = self.pdtype.param_shape()[0]
         self.memsize = memsize
 
@@ -77,8 +82,8 @@ class CnnGruPolicy(StochasticPolicy):
                               sy_nenvs=self.sy_nenvs,
                               sy_nsteps=self.sy_nsteps - 1,
                               pdparamsize=pdparamsize,
-                              rec_gate_init=rec_gate_init
-                              )
+                              rec_gate_init=rec_gate_init)
+
         self.pdparam_rollout, self.vpred_int_rollout, self.vpred_ext_rollout, self.snext_rollout = \
             self.apply_policy(self.ph_ob[None],
                               ph_new=self.ph_new,
@@ -91,14 +96,12 @@ class CnnGruPolicy(StochasticPolicy):
                               sy_nenvs=self.sy_nenvs,
                               sy_nsteps=self.sy_nsteps,
                               pdparamsize=pdparamsize,
-                              rec_gate_init=rec_gate_init
-                              )
+                              rec_gate_init=rec_gate_init)
+
         if dynamics_bonus:
             self.define_dynamics_prediction_rew(convfeat=convfeat, rep_size=rep_size, enlargement=enlargement)
         else:
             self.define_self_prediction_rew(convfeat=convfeat, rep_size=rep_size, enlargement=enlargement)
-
-
 
         pd = self.pdtype.pdfromflat(self.pdparam_rollout)
         self.a_samp = pd.sample()
@@ -110,13 +113,14 @@ class CnnGruPolicy(StochasticPolicy):
 
         self.ph_istate = ph_istate
 
-    @staticmethod
-    def apply_policy(ph_ob, ph_new, ph_istate, reuse, scope, hidsize, memsize, extrahid, sy_nenvs, sy_nsteps, pdparamsize, rec_gate_init):
+    def apply_policy(self, ph_ob, ph_new, ph_istate, reuse, scope, hidsize, memsize,
+                     extrahid, sy_nenvs, sy_nsteps, pdparamsize, rec_gate_init):
         data_format = 'NHWC'
         ph = ph_ob
         assert len(ph.shape.as_list()) == 5  # B,T,H,W,C
         logger.info("CnnGruPolicy: using '%s' shape %s as image input" % (ph.name, str(ph.shape)))
         X = tf.cast(ph, tf.float32) / 255.
+        # (None, 84, 84, 4) in case of MontezumaRevengeNoFrameskip
         X = tf.reshape(X, (-1, *ph.shape.as_list()[-3:]))
 
         activ = tf.nn.relu
@@ -124,19 +128,45 @@ class CnnGruPolicy(StochasticPolicy):
 
         with tf.variable_scope(scope, reuse=reuse), tf.device('/gpu:0' if yes_gpu else '/cpu:0'):
             X = activ(conv(X, 'c1', nf=32, rf=8, stride=4, init_scale=np.sqrt(2), data_format=data_format))
-            X = activ(conv(X, 'c2', nf=64, rf=4, stride=2, init_scale=np.sqrt(2), data_format=data_format))
-            X = activ(conv(X, 'c3', nf=64, rf=4, stride=1, init_scale=np.sqrt(2), data_format=data_format))
+            #X = activ(conv(X, 'c2', nf=64, rf=4, stride=2, init_scale=np.sqrt(2), data_format=data_format))
+            #X = activ(conv(X, 'c3', nf=64, rf=4, stride=1, init_scale=np.sqrt(2), data_format=data_format))
+
+            # over 14k rewards with these 2 and only the first conv layer
+            # with tf.variable_scope("augmented1"):
+            #     X = self.augmented_conv2d(X, 256, dk=24, dv=24)
+
+            # with tf.variable_scope("augmented2"):
+            #     X = self.augmented_conv2d(X, 256, dk=24, dv=24)
+
+            # 5.8k rewards 3 levels with these 2 and the first 2 conv layers
+            # with tf.variable_scope("augmented1"):
+            #     X = self.augmented_conv2d(X, 512, dk=256, dv=256)
+
+            # with tf.variable_scope("augmented2"):
+            #     X = self.augmented_conv2d(X, 512, dk=256, dv=256)
+
+            with tf.variable_scope("augmented1"):
+                X = self.augmented_conv2d(X, 256, dk=24, dv=24)
+
+            with tf.variable_scope("augmented2"):
+                X = self.augmented_conv2d(X, 256, dk=24, dv=24)
+
             X = to2d(X)
             X = activ(fc(X, 'fc1', nh=hidsize, init_scale=np.sqrt(2)))
             X = tf.reshape(X, [sy_nenvs, sy_nsteps, hidsize])
-            X, snext = tf.nn.dynamic_rnn(
-                GRUCell(memsize, rec_gate_init=rec_gate_init), (X, ph_new[:,:,None]),
-                dtype=tf.float32, time_major=False, initial_state=ph_istate)
+
+            X, snext = tf.nn.dynamic_rnn(GRUCell(memsize, rec_gate_init=rec_gate_init),
+                                         (X, ph_new[:,:,None]),
+                                         dtype=tf.float32,
+                                         time_major=False,
+                                         initial_state=ph_istate)
+
             X = tf.reshape(X, (-1, memsize))
             Xtout = X
             if extrahid:
                 Xtout = X + activ(fc(Xtout, 'fc2val', nh=memsize, init_scale=0.1))
                 X = X + activ(fc(X, 'fc2act', nh=memsize, init_scale=0.1))
+
             pdparam = fc(X, 'pd', nh=pdparamsize, init_scale=0.01)
             vpred_int = fc(Xtout, 'vf_int', nh=1, init_scale=0.01)
             vpred_ext = fc(Xtout, 'vf_ext', nh=1, init_scale=0.01)
@@ -263,9 +293,10 @@ class CnnGruPolicy(StochasticPolicy):
         feed1 = { self.ph_ob[k]: dict_obs[k][:,None] for k in self.ph_ob_keys }
         feed2 = { self.ph_istate: istate, self.ph_new: new[:,None].astype(np.float32) }
         feed1.update({self.ph_mean: self.ob_rms.mean, self.ph_std: self.ob_rms.var ** 0.5})
-        # for f in feed1:
-        #     print(f)
+
         a, vpred_int,vpred_ext, nlp, newstate, ent = tf.get_default_session().run(
-            [self.a_samp, self.vpred_int_rollout,self.vpred_ext_rollout, self.nlp_samp, self.snext_rollout, self.entropy_rollout],
+            [self.a_samp, self.vpred_int_rollout, self.vpred_ext_rollout, self.nlp_samp, self.snext_rollout, self.entropy_rollout],
             feed_dict={**feed1, **feed2})
-        return a[:,0], vpred_int[:,0],vpred_ext[:,0], nlp[:,0], newstate, ent[:,0]
+
+        # return for every env
+        return a[:,0], vpred_int[:,0], vpred_ext[:,0], nlp[:,0], newstate, ent[:,0]

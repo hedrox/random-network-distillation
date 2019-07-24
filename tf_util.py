@@ -294,7 +294,7 @@ def get_available_gpus():
 
 def load_state(fname):
     saver = tf.train.Saver()
-    saver.restore(tf.get_default_session(), fname)
+    saver.restore(tf.get_default_session(), tf.train.latest_checkpoint(fname))
 
 def save_state(fname):
     os.makedirs(os.path.dirname(fname), exist_ok=True)

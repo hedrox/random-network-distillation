@@ -1,4 +1,4 @@
-import time
+import time, os
 from collections import deque, defaultdict
 from copy import copy
 
@@ -24,7 +24,9 @@ class InteractionState(object):
     Parts of the PPOAgent's state that are based on interaction with a single batch of envs
     """
     def __init__(self, ob_space, ac_space, nsteps, gamma, venvs, stochpol, comm):
+        # 32 number of envs
         self.lump_stride = venvs[0].num_envs
+        # 1 venv
         self.venvs = venvs
         assert all(venv.num_envs == self.lump_stride for venv in self.venvs[1:]), 'All venvs should have the same num_envs'
         self.nlump = len(venvs)
@@ -108,7 +110,8 @@ class PpoAgent(object):
                  update_ob_stats_every_step=True,
                  int_coeff=None,
                  ext_coeff=None,
-                 ):
+                 restore_model=False):
+
         self.lr = lr
         self.ext_coeff = ext_coeff
         self.int_coeff = int_coeff
@@ -124,11 +127,13 @@ class PpoAgent(object):
             self.comm_train, self.comm_train_size = comm_train, comm_train.Get_size()
         else:
             self.comm_train, self.comm_train_size = self.comm_log, self.comm_log.Get_size()
+
         self.is_log_leader = self.comm_log.Get_rank()==0
         self.is_train_leader = self.comm_train.Get_rank()==0
+
         with tf.variable_scope(scope):
             self.best_ret = -np.inf
-            self.local_best_ret = - np.inf
+            self.local_best_ret = -np.inf
             self.rooms = []
             self.local_rooms = []
             self.scores = []
@@ -142,7 +147,7 @@ class PpoAgent(object):
             self.gamma = gamma
             self.gamma_ext = gamma_ext
             self.lam = lam
-            self.adam_hps = adam_hps or dict()
+            self.adam_hps = adam_hps or {}
             self.ph_adv = tf.placeholder(tf.float32, [None, None])
             self.ph_ret_int = tf.placeholder(tf.float32, [None, None])
             self.ph_ret_ext = tf.placeholder(tf.float32, [None, None])
@@ -152,18 +157,18 @@ class PpoAgent(object):
             self.ph_lr_pred = tf.placeholder(tf.float32, [])
             self.ph_cliprange = tf.placeholder(tf.float32, [])
 
-            #Define loss.
+            #Define loss; returns tf.nn.softmax_cross_entropy_with_logits_v2
             neglogpac = self.stochpol.pd_opt.neglogp(self.stochpol.ph_ac)
             entropy = tf.reduce_mean(self.stochpol.pd_opt.entropy())
             vf_loss_int = (0.5 * vf_coef) * tf.reduce_mean(tf.square(self.stochpol.vpred_int_opt - self.ph_ret_int))
             vf_loss_ext = (0.5 * vf_coef) * tf.reduce_mean(tf.square(self.stochpol.vpred_ext_opt - self.ph_ret_ext))
             vf_loss = vf_loss_int + vf_loss_ext
             ratio = tf.exp(self.ph_oldnlp - neglogpac) # p_new / p_old
-            negadv = - self.ph_adv
+            negadv = -self.ph_adv
             pg_losses1 = negadv * ratio
             pg_losses2 = negadv * tf.clip_by_value(ratio, 1.0 - self.ph_cliprange, 1.0 + self.ph_cliprange)
             pg_loss = tf.reduce_mean(tf.maximum(pg_losses1, pg_losses2))
-            ent_loss =  (- ent_coef) * entropy
+            ent_loss = (-ent_coef) * entropy
             approxkl = .5 * tf.reduce_mean(tf.square(neglogpac - self.ph_oldnlp))
             maxkl    = .5 * tf.reduce_max(tf.square(neglogpac - self.ph_oldnlp))
             clipfrac = tf.reduce_mean(tf.to_float(tf.greater(tf.abs(ratio - 1.0), self.ph_cliprange)))
@@ -182,19 +187,36 @@ class PpoAgent(object):
             self._train = trainer.apply_gradients(grads_and_vars)
 
         #Quantities for reporting.
-        self._losses = [loss, pg_loss, vf_loss, entropy, clipfrac, approxkl, maxkl, self.stochpol.aux_loss,
-                        self.stochpol.feat_var, self.stochpol.max_feat, global_grad_norm]
-        self.loss_names = ['tot', 'pg', 'vf', 'ent', 'clipfrac', 'approxkl', 'maxkl', "auxloss", "featvar",
+        self._losses = [loss, pg_loss, vf_loss, entropy, clipfrac, approxkl, maxkl,
+                        self.stochpol.aux_loss, self.stochpol.feat_var,
+                        self.stochpol.max_feat, global_grad_norm]
+
+        self.loss_names = ['tot', 'pg', 'vf', 'ent', 'clipfrac', 'approxkl', 'maxkl',
+                           "auxloss", "featvar",
                            "maxfeat", "gradnorm"]
+
         self.I = None
         self.disable_policy_update = None
         allvars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope=self.abs_scope)
         if self.is_log_leader:
             tf_util.display_var_info(allvars)
-        tf.get_default_session().run(tf.variables_initializer(allvars))
-        sync_from_root(tf.get_default_session(), allvars) #Syncs initialization across mpi workers.
+
+        model_path = os.path.join(os.getcwd(), 'saved_model')
+        self.model_path = os.path.join(model_path, 'ppo.ckpt')
+
+        if restore_model:
+            tf_util.load_state(model_path)
+        else:
+            tf.get_default_session().run(tf.variables_initializer(allvars))
+
+        #Syncs initialization across mpi workers.
+        sync_from_root(tf.get_default_session(), allvars)
         self.t0 = time.time()
         self.global_tcount = 0
+
+    def save_model(self, num_steps):
+        logger.info("Saving model at step: {}".format(num_steps))
+        tf_util.save_state(self.model_path)
 
     def start_interaction(self, venvs, disable_policy_update=False):
         self.I = InteractionState(ob_space=self.ob_space, ac_space=self.ac_space,
@@ -374,8 +396,10 @@ class PpoAgent(object):
             fd = {ph : buf[mbenvinds] for (ph, buf) in ph_buf}
             fd.update({self.ph_lr : self.lr, self.ph_cliprange : self.cliprange})
             fd[self.stochpol.ph_ob[None]] = np.concatenate([self.I.buf_obs[None][mbenvinds], self.I.buf_ob_last[None][mbenvinds, None]], 1)
+
             assert list(fd[self.stochpol.ph_ob[None]].shape) == [self.I.nenvs//self.nminibatches, self.nsteps + 1] + list(self.ob_space.shape), \
                 [fd[self.stochpol.ph_ob[None]].shape, [self.I.nenvs//self.nminibatches, self.nsteps + 1] + list(self.ob_space.shape)]
+
             fd.update({self.stochpol.ph_mean:self.stochpol.ob_rms.mean, self.stochpol.ph_std:self.stochpol.ob_rms.var**0.5})
 
             ret = tf.get_default_session().run(self._losses+[self._train], feed_dict=fd)[:-1]
@@ -442,6 +466,7 @@ class PpoAgent(object):
                         info_with_places['places'] = info['episode']['visited_rooms']
                     except:
                         import ipdb; ipdb.set_trace()
+
                     self.I.buf_epinfos[env_pos_in_lump+l*self.I.lump_stride][t] = info_with_places
 
             sli = slice(l * self.I.lump_stride, (l + 1) * self.I.lump_stride)
@@ -478,6 +503,7 @@ class PpoAgent(object):
                     self.I.buf_ob_last[k][sli] = dict_nextobs[k]
                 self.I.buf_new_last[sli] = nextnews
                 # with logger.ProfileKV("policy_inference"):
+                #Calls the policy and value function on the last step.
                 _, self.I.buf_vpred_int_last[sli], self.I.buf_vpred_ext_last[sli], _, _, _ = self.stochpol.call(dict_nextobs, nextnews, self.I.mem_state[memsli], update_obs_stats=False)
                 self.I.buf_rews_ext[sli, t] = rews
 
@@ -499,7 +525,7 @@ class PpoAgent(object):
                 update_info = {}
             self.I.seg_init_mem_state = copy(self.I.mem_state)
             global_i_stats = dict_gather(self.comm_log, self.I.stats, op='sum')
-            global_deque_mean = dict_gather(self.comm_log, { n : np.mean(dvs) for n,dvs in self.I.statlists.items() }, op='mean')
+            global_deque_mean = dict_gather(self.comm_log, {n: np.mean(dvs) for n,dvs in self.I.statlists.items()}, op='mean')
             update_info.update(global_i_stats)
             update_info.update(global_deque_mean)
             self.global_tcount = global_i_stats['tcount']
@@ -520,6 +546,7 @@ class PpoAgent(object):
                     score_multiple = self.I.venvs[0].score_multiple
                     if score_multiple is None:
                         score_multiple = 1000
+
                     rounded_score = int(epinfo["r"] / score_multiple) * score_multiple
                     self.scores.append(rounded_score)
                     self.scores = sorted(list(set(self.scores)))

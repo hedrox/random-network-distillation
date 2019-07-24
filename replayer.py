@@ -35,6 +35,9 @@ class EpisodeIterator(object):
                 yield from self.iterate_over_episodes_in_file(f, condition=self.condition)
         raise StopIteration
 
+    def __next__(self):
+        return self.iterate()
+
     def iterate_over_episodes_in_file(self, file, condition):
         while True:
             try:
@@ -48,7 +51,6 @@ class EpisodeIterator(object):
                 self.episode_number += 1
                 if self.episode_number >= args['skip']:
                     if 'obs' in episode:
-                        # import ipdb; ipdb.set_trace()
                         yield episode
                     else:
                         unwrapped_env = env.unwrapped
@@ -66,6 +68,7 @@ class EpisodeIterator(object):
                             if args['display'] == 'game':
                                 rend = unwrapped_env.render(mode="rgb_array")
                             else:
+                                # this is what the 84x84 representation looks like I think
                                 rend = np.asarray(ob)[:, :, :1]
                             frames.append(rend)
                             ret += r
@@ -142,7 +145,7 @@ class Animation(object):
             return frame[:, :, -1]
 
     def run(self):
-        self.episode = next(self.episodes)
+        self.episode = next(self.episodes.iterate())
 
         if self.axes == {}:
             self.create_axes(self.episode)
@@ -207,6 +210,9 @@ if __name__ == '__main__':
     #folder = exptag.get_last_experiment_folder_by_tag(args['tag'])
     # Give last experiment folder in the tag
     folder = args['tag']
+    if not folder:
+        print("Please provide dir path to the openai saving using --tag")
+        sys.exit(0)
 
     def date_from_folder(folder):
         assert folder.startswith('openai-')
@@ -219,11 +225,13 @@ if __name__ == '__main__':
         all_machine_dirs = glob.glob(machine_dir[:-1]+'*')
     else:
         all_machine_dirs = [machine_dir]
+
     other_folders = []
     for machine_dir in all_machine_dirs:
         this_machine_other_folders = os.listdir(machine_dir)
         this_machine_other_folders = [f_ for f_ in this_machine_other_folders
-                                      if f_.startswith("openai-") and abs((date_from_folder(f_) - date_started).total_seconds()) < 3]
+                                      if f_.startswith("openai-") and
+                                      abs((date_from_folder(f_) - date_started).total_seconds()) < 3]
         this_machine_other_folders = [os.path.join(machine_dir, f_) for f_ in this_machine_other_folders]
         other_folders.extend(this_machine_other_folders)
 
@@ -241,8 +249,12 @@ if __name__ == '__main__':
     if args['kind'] == 'movie':
         import imageio
         import time
+        rnd_movies_path = os.path.expanduser('~/rnd_movies')
+        if not os.path.exists(rnd_movies_path):
+            os.makedirs(rnd_movies_path)
+
         for i, episode in enumerate(episodes.iterate()):
-            filename = os.path.expanduser('~/rnd_movies/movie_{}.mp4'.format(time.time()))
+            filename = os.path.join(rnd_movies_path, 'movie_{}.mp4').format(time.time())
             imageio.mimwrite(filename, episode["obs"], fps=30)
             print(filename)
 

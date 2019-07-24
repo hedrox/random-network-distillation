@@ -20,21 +20,22 @@ def train(*, env_id, num_env, hps, num_timesteps, seed):
                        start_index=num_env * MPI.COMM_WORLD.Get_rank(),
                        max_episode_steps=hps.pop('max_episode_steps')),
         hps.pop('frame_stack'))
-    # venv.score_multiple = {'Mario': 500,
-    #                        'MontezumaRevengeNoFrameskip-v4': 100,
-    #                        'GravitarNoFrameskip-v4': 250,
-    #                        'PrivateEyeNoFrameskip-v4': 500,
-    #                        'SolarisNoFrameskip-v4': None,
-    #                        'VentureNoFrameskip-v4': 200,
-    #                        'PitfallNoFrameskip-v4': 100,
-    #                        }[env_id]
-    venv.score_multiple = 1
+    venv.score_multiple = {'Mario': 500,
+                           'MontezumaRevengeNoFrameskip-v4': 1,
+                           'GravitarNoFrameskip-v4': 250,
+                           'PrivateEyeNoFrameskip-v4': 500,
+                           'SolarisNoFrameskip-v4': None,
+                           'VentureNoFrameskip-v4': 200,
+                           'PitfallNoFrameskip-v4': 100,
+                           }[env_id]
+
     venv.record_obs = True if env_id == 'SolarisNoFrameskip-v4' else False
     ob_space = venv.observation_space
     ac_space = venv.action_space
     gamma = hps.pop('gamma')
     policy = {'rnn': CnnGruPolicy,
               'cnn': CnnPolicy}[hps.pop('policy')]
+
     agent = PpoAgent(
         scope='ppo',
         ob_space=ob_space,
@@ -63,10 +64,13 @@ def train(*, env_id, num_env, hps, num_timesteps, seed):
         update_ob_stats_every_step=hps.pop('update_ob_stats_every_step'),
         int_coeff=hps.pop('int_coeff'),
         ext_coeff=hps.pop('ext_coeff'),
+        restore_model=hps.pop('restore_model')
     )
     agent.start_interaction([venv])
     if hps.pop('update_ob_stats_from_random_agent'):
         agent.collect_random_statistics(num_timesteps=128*50)
+
+    save_model = hps.pop('save_model')
     assert len(hps) == 0, "Unused hyperparameters: %s" % list(hps.keys())
 
     counter = 0
@@ -76,6 +80,10 @@ def train(*, env_id, num_env, hps, num_timesteps, seed):
             logger.logkvs(info['update'])
             logger.dumpkvs()
             counter += 1
+
+            if (counter % 500) == 0 and save_model:
+                agent.save_model(agent.I.step_count)
+
         if agent.I.stats['tcount'] > num_timesteps:
             break
 
@@ -95,7 +103,7 @@ def main():
     parser.add_argument('--num_env', type=int, default=32)
     parser.add_argument('--use_news', type=int, default=0)
     parser.add_argument('--gamma', type=float, default=0.99)
-    parser.add_argument('--gamma_ext', type=float, default=0.99)
+    parser.add_argument('--gamma_ext', type=float, default=0.999)
     parser.add_argument('--lam', type=float, default=0.95)
     parser.add_argument('--update_ob_stats_every_step', type=int, default=0)
     parser.add_argument('--update_ob_stats_independently_per_gpu', type=int, default=0)
@@ -106,7 +114,8 @@ def main():
     parser.add_argument('--int_coeff', type=float, default=1.)
     parser.add_argument('--ext_coeff', type=float, default=2.)
     parser.add_argument('--dynamics_bonus', type=int, default=0)
-
+    parser.add_argument('--save_model', action='store_true')
+    parser.add_argument('--restore_model', action='store_true')
 
     args = parser.parse_args()
     logger.configure(dir=logger.get_dir(), format_strs=['stdout', 'log', 'csv'] if MPI.COMM_WORLD.Get_rank() == 0 else [])
@@ -138,7 +147,9 @@ def main():
         policy=args.policy,
         int_coeff=args.int_coeff,
         ext_coeff=args.ext_coeff,
-        dynamics_bonus = args.dynamics_bonus
+        dynamics_bonus = args.dynamics_bonus,
+        save_model=args.save_model,
+        restore_model=args.restore_model
     )
 
     tf_util.make_session(make_default=True)
