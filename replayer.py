@@ -254,8 +254,12 @@ if __name__ == '__main__':
             os.makedirs(rnd_movies_path)
 
         for i, episode in enumerate(episodes.iterate()):
-            filename = os.path.join(rnd_movies_path, 'movie_{}.mp4').format(time.time())
+            time_now = time.time()
+            filename = os.path.join(rnd_movies_path, 'movie_{}.mp4').format(time_now)
             imageio.mimwrite(filename, episode["obs"], fps=30)
+
+            # filename = os.path.join(rnd_movies_path, 'attention_movie_{}.mp4').format(time_now)
+            # imageio.mimwrite(filename, episode["attention"], fps=30)
             print(filename)
 
     else:

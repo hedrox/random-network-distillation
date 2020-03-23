@@ -67,6 +67,61 @@ class WarpFrame(gym.ObservationWrapper):
         frame = cv2.resize(frame, (self.width, self.height), interpolation=cv2.INTER_AREA)
         return frame[:, :, None]
 
+class WarpEgo(gym.ObservationWrapper):
+    def __init__(self, env):
+        """Warp frames to 84x84 as done in the Nature paper and later work."""
+        # check that env is montezuma not something else
+        gym.ObservationWrapper.__init__(self, env)
+        # self.width = 84
+        # self.height = 84
+        self.width = 51
+        self.height = 30
+
+        self.observation_space = spaces.Box(low=0, high=255,
+            shape=(self.height, self.width, 1), dtype=np.uint8)
+
+        self.lower_color = np.array([199, 71, 71], dtype="uint8")
+        self.upper_color = np.array([201, 73, 73], dtype="uint8")
+
+    def find_character_in_frame(self, frame):
+        mask = cv2.inRange(frame, self.lower_color, self.upper_color)
+        output = cv2.bitwise_and(frame, frame, mask=mask)
+
+        pix_x, pix_y, _ = np.where(output > 0)
+        if pix_x.size != 0:
+            pix_x = pix_x[np.where(pix_x > 19)]
+            pix_y = pix_y[-pix_x.size:]
+
+            # If array is even then median doesn't exist in the array, because it's the average
+            # between the middle twos
+            median_x = int(np.median(pix_x))
+            while median_x not in pix_x:
+                median_x += 1
+
+            median_y = int(pix_y[np.where(pix_x == median_x)[0][0]])
+        else:
+            median_x = output.shape[0] // 2
+            median_y = output.shape[1] // 2
+
+        low_x = median_x-self.height
+        high_x = median_x+self.height
+        low_y = median_y-self.width
+        high_y = median_y+self.width
+
+        low_x = low_x if low_x > 0 else 0
+        high_x = high_x if high_x < frame.shape[0] else frame.shape[0]
+        low_y = low_y if low_y > 0 else 0
+        high_y = high_y if high_y < frame.shape[1] else frame.shape[1]
+
+        roi = frame[low_x:high_x, low_y:high_y]
+        return roi
+
+    def observation(self, frame):
+        frame = self.find_character_in_frame(frame)
+        frame = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
+        frame = cv2.resize(frame, (self.width, self.height), interpolation=cv2.INTER_AREA)
+        return frame[:, :, None]
+
 class FrameStack(gym.Wrapper):
     def __init__(self, env, k):
         """Stack k last frames.
@@ -212,10 +267,15 @@ def make_atari(env_id, max_episode_steps=4500):
     env = AddRandomStateToInfo(env)
     return env
 
-def wrap_deepmind(env, clip_rewards=True, frame_stack=False, scale=False):
+
+def wrap_deepmind(env, clip_rewards=True, frame_stack=False, scale=False, ego=False):
     """Configure environment for DeepMind-style Atari.
     """
-    env = WarpFrame(env)
+    if ego:
+        env = WarpEgo(env)
+    else:
+        env = WarpFrame(env)
+
     if scale:
         env = ScaledFloatFrame(env)
     if clip_rewards:

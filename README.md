@@ -18,3 +18,13 @@ python run_atari.py --gamma_ext 0.999
 To use more than one gpu/machine, use MPI (e.g. `mpiexec -n 8 python run_atari.py --num_env 128 --gamma_ext 0.999` should use 1024 parallel environments to collect experience on an 8 gpu machine). 
 
 ### [Blog post and videos](https://blog.openai.com/reinforcement-learning-with-prediction-based-rewards/)
+
+### Installation Guide
+First install the conda environment
+```bash
+conda create --name <env_name> --file conda_requirements.txt
+```
+Then install dependencies that cannot be installed with conda
+```bash
+pip install -r pip_requirements.txt
+```

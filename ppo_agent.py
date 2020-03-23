@@ -207,6 +207,7 @@ class PpoAgent(object):
         if restore_model:
             tf_util.load_state(model_path)
         else:
+            #self.activate_graph_debugging()
             tf.get_default_session().run(tf.variables_initializer(allvars))
 
         #Syncs initialization across mpi workers.
@@ -354,11 +355,11 @@ class PpoAgent(object):
                      'ret_int': rets_int,
                      'ret_ext': rets_ext,
                      }
+
         if self.I.venvs[0].record_obs:
             to_record['obs'] = self.I.buf_obs[None]
         self.recorder.record(bufs=to_record,
                              infos=self.I.buf_epinfos)
-
 
         #Create feeddict for optimization.
         envsperbatch = self.I.nenvs // self.nminibatches
@@ -386,6 +387,16 @@ class PpoAgent(object):
             logger.info(" "*6 + fmt_row(13, self.loss_names))
 
 
+        to_record_attention = None
+        attention_output = None
+        try:
+            #attention_output = tf.get_default_graph().get_tensor_by_name("ppo/pol/augmented2/attention_output_combined:0")
+            #attention_output = tf.get_default_graph().get_tensor_by_name("ppo/pol/augmented2/attention_output_combined/kernel:0")
+            attention_output = tf.get_default_graph().get_tensor_by_name("ppo/pol/augmented2/attention_output_combined/Conv2D:0")
+        except Exception as e:
+            logger.error("Exception in attention_output: {}".format(e))
+            attention_output = None
+
         epoch = 0
         start = 0
         #Optimizes on current data for several epochs.
@@ -402,7 +413,45 @@ class PpoAgent(object):
 
             fd.update({self.stochpol.ph_mean:self.stochpol.ob_rms.mean, self.stochpol.ph_std:self.stochpol.ob_rms.var**0.5})
 
-            ret = tf.get_default_session().run(self._losses+[self._train], feed_dict=fd)[:-1]
+            if attention_output is not None:
+                _train_losses = [attention_output, self._train]
+            else:
+                _train_losses = [self._train]
+
+            ret = tf.get_default_session().run(self._losses + _train_losses, feed_dict=fd)[:-1]
+
+            if attention_output is not None:
+                attn_output = ret[-1]
+                ret = ret[:-1]
+                outshape = list(self.I.buf_obs[None][mbenvinds].shape[:2])+list(attn_output.shape[1:])
+                attn_output = np.reshape(attn_output, outshape)
+                attn_output = attn_output[:,:,:,:,:64]
+
+                # attn_output = attn_output[:,:,:,:,:1]
+                # for x in range(attn_output.shape[0]):
+                #     for y in range(attn_output.shape[1]):
+                #         attn_min = np.stack([attn_output[x,y,...,0].min()])
+                #         attn_max = np.stack([attn_output[x,y,...,0].max()])
+                #         attn_output[x,y,...] = (1 * ((attn_output[x,y,...] - attn_min)/(attn_max-attn_min)))
+
+                #         #attn_output[x,y,...] = (255 * ((attn_output[x,y,...] - attn_min)/(attn_max-attn_min)))
+
+                # #((oldval - Min) * (255/(Max-Min)))
+                # for x in range(attn_output.shape[0]):
+                #     for y in range(attn_output.shape[1]):
+                #         attn_min = np.stack([attn_output[x,y,...,0].min(),
+                #                              attn_output[x,y,...,1].min(),
+                #                              attn_output[x,y,...,2].min(),
+                #                              attn_output[x,y,...,3].min()])
+
+                #         attn_max = np.stack([attn_output[x,y,...,0].max(),
+                #                              attn_output[x,y,...,1].max(),
+                #                              attn_output[x,y,...,2].max(),
+                #                              attn_output[x,y,...,3].max()])
+
+                #         #attn_output[x,y,...] = (attn_output[x,y,...] - attn_min) * (255/(attn_max-attn_min))
+                #         attn_output[x,y,...] = (attn_output[x,y,...] - attn_min) / (attn_max-attn_min)
+
             if not self.testing:
                 lossdict = dict(zip([n for n in self.loss_names], ret), axis=0)
             else:
@@ -418,6 +467,20 @@ class PpoAgent(object):
             if start == self.I.nenvs:
                 epoch += 1
                 start = 0
+
+                if attention_output is not None:
+                    if to_record_attention is None:
+                        to_record_attention = attn_output
+                    else:
+                        to_record_attention = np.concatenate([to_record_attention,
+                                                              attn_output])
+
+        if to_record_attention is not None:
+            to_record['obs'] = self.I.buf_obs[None]
+            to_record['attention'] = to_record_attention
+        self.recorder.record(bufs=to_record,
+                             infos=self.I.buf_epinfos)
+        to_record_attention = None
 
         if self.is_train_leader:
             self.I.stats["n_updates"] += 1
@@ -566,6 +629,18 @@ class PpoAgent(object):
 
 
         return {'update' : update_info}
+
+    def activate_graph_debugging(self):
+        """
+        Necessary in order to debug tensorflow using the CLI Tensorflow 1.0 Debugger
+        (before the 2.0 eager execution)
+        """
+        sess = tf.get_default_session()
+        from tensorflow.python import debug as tf_debug
+
+        sess_debug = tf_debug.LocalCLIDebugWrapperSession(sess)
+        sess._default_session = sess_debug.as_default()
+        sess._default_session.__enter__()
 
 
 class RewardForwardFilter(object):

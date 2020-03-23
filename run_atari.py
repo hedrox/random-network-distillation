@@ -13,10 +13,12 @@ from ppo_agent import PpoAgent
 from utils import set_global_seeds
 from vec_env import VecFrameStack
 
+# Profiling libraries
+# import cProfile, tracemalloc
 
 def train(*, env_id, num_env, hps, num_timesteps, seed):
     venv = VecFrameStack(
-        make_atari_env(env_id, num_env, seed, wrapper_kwargs=dict(),
+        make_atari_env(env_id, num_env, seed, wrapper_kwargs={'ego': True},
                        start_index=num_env * MPI.COMM_WORLD.Get_rank(),
                        max_episode_steps=hps.pop('max_episode_steps')),
         hps.pop('frame_stack'))
@@ -73,6 +75,10 @@ def train(*, env_id, num_env, hps, num_timesteps, seed):
     save_model = hps.pop('save_model')
     assert len(hps) == 0, "Unused hyperparameters: %s" % list(hps.keys())
 
+    #profiler = cProfile.Profile()
+    #profiler.enable()
+    #tracemalloc.start()
+    #prev_snap = tracemalloc.take_snapshot()
     counter = 0
     while True:
         info = agent.step()
@@ -80,6 +86,14 @@ def train(*, env_id, num_env, hps, num_timesteps, seed):
             logger.logkvs(info['update'])
             logger.dumpkvs()
             counter += 1
+
+            # if (counter % 10) == 0:
+            #     snapshot = tracemalloc.take_snapshot()
+            #     top_stats = snapshot.compare_to(prev_snap, 'lineno')
+            #     for stat in top_stats[:10]:
+            #         print(stat)
+            #     prev_snap = snapshot
+            #     profiler.dump_stats("profile_rnd")
 
             if (counter % 500) == 0 and save_model:
                 agent.save_model(agent.I.step_count)
@@ -91,7 +105,9 @@ def train(*, env_id, num_env, hps, num_timesteps, seed):
 
 
 def add_env_params(parser):
-    parser.add_argument('--env', help='environment ID', default='MontezumaRevengeNoFrameskip-v4')
+    parser.add_argument('--env', help='environment ID', default='MontezumaRevengeNoFrameskip-v4',
+                        choices=['MontezumaRevengeNoFrameskip-v4', 'GravitarNoFrameskip-v4',
+                                 'VentureNoFrameskip-v4'])
     parser.add_argument('--seed', help='RNG seed', type=int, default=0)
     parser.add_argument('--max_episode_steps', type=int, default=4500)
 

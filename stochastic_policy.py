@@ -64,14 +64,22 @@ class StochasticPolicy(object):
 
         # Pad to shift from relative to absolute indexing
         B = B if B.value is not None else -1
-        ph_pad = tf.placeholder(tf.float32, shape=[None, Nh, L, 1])
-        col_pad = tf.zeros_like(ph_pad)
-        X = tf.concat([X, col_pad], axis=3)
+
+        # ph_pad = tf.placeholder(tf.float32, shape=[None, Nh, L, 1])
+        # col_pad = tf.zeros_like(ph_pad)
+        # X = tf.concat([X, col_pad], axis=3)
+        # flat_x = tf.reshape(X, [B, Nh, L * 2 * L])
+
+        # ph_flat_pad = tf.placeholder(tf.float32, shape=[None, Nh, L-1])
+        # flat_pad = tf.zeros_like(ph_flat_pad)
+        # flat_x_padded = tf.concat([flat_x, flat_pad], axis=2)
+
+        col_pad = tf.constant([[0, 0], [0, 0], [0, 0], [0, 1]])
+        X = tf.pad(X, col_pad, "CONSTANT")
         flat_x = tf.reshape(X, [B, Nh, L * 2 * L])
 
-        ph_flat_pad = tf.placeholder(tf.float32, shape=[None, Nh, L-1])
-        flat_pad = tf.zeros_like(ph_flat_pad)
-        flat_x_padded = tf.concat([flat_x, flat_pad], axis=2)
+        flat_pad = tf.constant([[0, 0], [0, 0], [0, L.value-1]])
+        flat_x_padded = tf.pad(flat_x, flat_pad, "CONSTANT")
 
         # Reshape and slice out the padded elements.
         final_x = tf.reshape(flat_x_padded, [B, Nh, L+1, (2*L) - 1])
@@ -113,16 +121,22 @@ class StochasticPolicy(object):
 
         # Relative logits in width dimension
         # stddev=dk.value ** -0.5 ?
+        # key_rel_w = tf.get_variable('key_rel_w', shape=(2*W-1, dk),
+        #                             initializer=tf.random_normal_initializer(dk.value ** -0.5))
+
         key_rel_w = tf.get_variable('key_rel_w', shape=(2*W-1, dk),
-                                    initializer=tf.random_normal_initializer(dk.value ** -0.5))
+                                    initializer=tf.random_normal_initializer(stddev=dk.value ** -0.5))
 
         rel_logits_w = self.relative_logits_1d(q, key_rel_w, H, W, Nh, [0, 1, 2, 4, 3, 5])
 
         # Relative logits in height dimension.
         # For ease, we transpose height and width and repeat the above steps, and transpose to
         # eventually put the logits in the correct position
+        # key_rel_h = tf.get_variable('key_rel_h', shape=(2*H-1, dk),
+        #                             initializer=tf.random_normal_initializer(dk.value ** -0.5))
+
         key_rel_h = tf.get_variable('key_rel_h', shape=(2*H-1, dk),
-                                    initializer=tf.random_normal_initializer(dk.value ** -0.5))
+                                    initializer=tf.random_normal_initializer(stddev=dk.value ** -0.5))
 
         rel_logits_h = self.relative_logits_1d(tf.transpose(q, [0, 1, 3, 2, 4]),
                                                key_rel_h, W, H, Nh, [0, 1, 4, 2, 5, 3])
@@ -153,6 +167,7 @@ class StochasticPolicy(object):
         a, b = transposed.shape[-2:].as_list()
         ret_shape = transposed.shape[:-2].as_list() + [a*b]
         ret_shape = [x if x is not None else -1 for x in ret_shape]
+        # return tf.reshape(transposed, ret_shape, name='attention_output_combined')
         return tf.reshape(transposed, ret_shape)
 
     def compute_flat_qkv(self, inputs, dk, dv, Nh):
@@ -216,9 +231,9 @@ class StochasticPolicy(object):
         # [B, Nh, HW, dvh]
         attn_out = tf.matmul(weights, flat_v)
         B = B if B.value is not None else -1
-        attn_out = tf.reshape(flat_v, [B, Nh, H, W, dv // Nh])
+        attn_out = tf.reshape(attn_out, [B, Nh, H, W, dv // Nh])
         attn_out = self.combine_heads_2d(attn_out)
-        attn_out = tf.layers.conv2d(attn_out, dv, 1)
+        attn_out = tf.layers.conv2d(attn_out, dv, 1, name='attention_output_combined')
         return tf.concat([conv_out, attn_out], axis=3)
 
     def finalize(self, pd, vpred, ph_istate=None): #pylint: disable=W0221
