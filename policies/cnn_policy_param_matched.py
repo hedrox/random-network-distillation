@@ -1,3 +1,4 @@
+import os
 import numpy as np
 import tensorflow as tf
 from baselines import logger
@@ -42,44 +43,79 @@ class CnnPolicy(StochasticPolicy):
             'large': 4
         }[policy_size]
         rep_size = 512
-        self.ph_mean = tf.placeholder(dtype=tf.float32, shape=list(ob_space.shape[:2])+[1], name="obmean")
-        self.ph_std = tf.placeholder(dtype=tf.float32, shape=list(ob_space.shape[:2])+[1], name="obstd")
+        if os.environ["EXPERIMENT_LVL"] == "ego":
+            self.ph_mean = tf.placeholder(dtype=tf.float32, shape=list(ob_space.spaces['normal'].shape[:2])+[1], name="obmean")
+            self.ph_std = tf.placeholder(dtype=tf.float32, shape=list(ob_space.spaces['normal'].shape[:2])+[1], name="obstd")
+            self.ob_rms = RunningMeanStd(shape=list(ob_space.spaces['normal'].shape[:2])+[1], use_mpi=not update_ob_stats_independently_per_gpu)
+        else:
+            self.ph_mean = tf.placeholder(dtype=tf.float32, shape=list(ob_space.shape[:2])+[1], name="obmean")
+            self.ph_std = tf.placeholder(dtype=tf.float32, shape=list(ob_space.shape[:2])+[1], name="obstd")
+            self.ob_rms = RunningMeanStd(shape=list(ob_space.shape[:2])+[1], use_mpi=not update_ob_stats_independently_per_gpu)
+
         memsize *= enlargement
         hidsize *= enlargement
         convfeat = 16*enlargement
-        self.ob_rms = RunningMeanStd(shape=list(ob_space.shape[:2])+[1], use_mpi=not update_ob_stats_independently_per_gpu)
         ph_istate = tf.placeholder(dtype=tf.float32,shape=(None,memsize), name='state')
         pdparamsize = self.pdtype.param_shape()[0]
         self.memsize = memsize
 
-        #Inputs to policy and value function will have different shapes depending on whether it is rollout
-        #or optimization time, so we treat separately.
-        self.pdparam_opt, self.vpred_int_opt, self.vpred_ext_opt, self.snext_opt = \
-            self.apply_policy(self.ph_ob[None][:,:-1],
-                              reuse=False,
-                              scope=scope,
-                              hidsize=hidsize,
-                              memsize=memsize,
-                              extrahid=extrahid,
-                              sy_nenvs=self.sy_nenvs,
-                              sy_nsteps=self.sy_nsteps - 1,
-                              pdparamsize=pdparamsize
-                              )
-        self.pdparam_rollout, self.vpred_int_rollout, self.vpred_ext_rollout, self.snext_rollout = \
-            self.apply_policy(self.ph_ob[None],
-                              reuse=True,
-                              scope=scope,
-                              hidsize=hidsize,
-                              memsize=memsize,
-                              extrahid=extrahid,
-                              sy_nenvs=self.sy_nenvs,
-                              sy_nsteps=self.sy_nsteps,
-                              pdparamsize=pdparamsize
-                              )
+        if None in self.ph_ob:
+            #Inputs to policy and value function will have different shapes depending on whether it is rollout
+            #or optimization time, so we treat separately.
+            self.pdparam_opt, self.vpred_int_opt, self.vpred_ext_opt, self.snext_opt = \
+                self.apply_policy(self.ph_ob[None][:,:-1],
+                                  reuse=False,
+                                  scope=scope,
+                                  hidsize=hidsize,
+                                  memsize=memsize,
+                                  extrahid=extrahid,
+                                  sy_nenvs=self.sy_nenvs,
+                                  sy_nsteps=self.sy_nsteps - 1,
+                                  pdparamsize=pdparamsize
+                                  )
+            self.pdparam_rollout, self.vpred_int_rollout, self.vpred_ext_rollout, self.snext_rollout = \
+                self.apply_policy(self.ph_ob[None],
+                                  reuse=True,
+                                  scope=scope,
+                                  hidsize=hidsize,
+                                  memsize=memsize,
+                                  extrahid=extrahid,
+                                  sy_nenvs=self.sy_nenvs,
+                                  sy_nsteps=self.sy_nsteps,
+                                  pdparamsize=pdparamsize
+                                  )
+        else:
+            self.pdparam_opt, self.vpred_int_opt, self.vpred_ext_opt, self.snext_opt = \
+                self.apply_ego_policy(self.ph_ob,
+                                      reuse=False,
+                                      scope=scope,
+                                      hidsize=hidsize,
+                                      memsize=memsize,
+                                      extrahid=extrahid,
+                                      sy_nenvs=self.sy_nenvs,
+                                      sy_nsteps=self.sy_nsteps - 1,
+                                      pdparamsize=pdparamsize
+                                      )
+            self.pdparam_rollout, self.vpred_int_rollout, self.vpred_ext_rollout, self.snext_rollout = \
+                self.apply_ego_policy(self.ph_ob,
+                                      reuse=True,
+                                      scope=scope,
+                                      hidsize=hidsize,
+                                      memsize=memsize,
+                                      extrahid=extrahid,
+                                      sy_nenvs=self.sy_nenvs,
+                                      sy_nsteps=self.sy_nsteps,
+                                      pdparamsize=pdparamsize
+                                      )
+
         if dynamics_bonus:
             self.define_dynamics_prediction_rew(convfeat=convfeat, rep_size=rep_size, enlargement=enlargement)
         else:
-            self.define_self_prediction_rew(convfeat=convfeat, rep_size=rep_size, enlargement=enlargement)
+            if os.environ["EXPERIMENT_LVL"] == "ego":
+                self.define_self_prediction_rew_ego(convfeat=convfeat, rep_size=rep_size,
+                                                    enlargement=enlargement)
+            else:
+                self.define_self_prediction_rew(convfeat=convfeat, rep_size=rep_size, enlargement=enlargement)
 
         pd = self.pdtype.pdfromflat(self.pdparam_rollout)
         self.a_samp = pd.sample()
@@ -90,6 +126,129 @@ class CnnPolicy(StochasticPolicy):
         self.pd_opt = self.pdtype.pdfromflat(self.pdparam_opt)
 
         self.ph_istate = ph_istate
+
+    def apply_ego_policy(self, ph_ob, reuse, scope, hidsize, memsize, extrahid, sy_nenvs, sy_nsteps, pdparamsize):
+        if reuse:
+            ph_ego = ph_ob['ego']
+            ph_normal = ph_ob['normal']
+        else:
+            ph_ego = ph_ob['ego'][:,:-1]
+            ph_normal = ph_ob['normal'][:,:-1]
+
+        data_format = 'NHWC'
+        assert len(ph_normal.shape.as_list()) == 5  # B,T,H,W,C
+        assert len(ph_ego.shape.as_list()) == 5  # B,T,H,W,C
+
+        logger.info(f"CnnPolicy: using '{ph_normal.name}' shape {str(ph_normal.shape)} as normal image input")
+        logger.info(f"CnnPolicy: using '{ph_ego.name}' shape {str(ph_ego.shape)} as ego image input")
+
+        X_n = tf.cast(ph_normal, tf.float32) / 255.
+        X_n = tf.reshape(X_n, (-1, *ph_normal.shape.as_list()[-3:]))
+
+        X_ego = tf.cast(ph_ego, tf.float32) / 255.
+        X_ego = tf.reshape(X_ego, (-1, *ph_ego.shape.as_list()[-3:]))
+
+        activ = tf.nn.relu
+        yes_gpu = any(get_available_gpus())
+        with tf.variable_scope(scope, reuse=reuse), tf.device('/gpu:0' if yes_gpu else '/cpu:0'):
+            X_n = activ(conv(X_n, 'c1n', nf=32, rf=8, stride=4, init_scale=np.sqrt(2), data_format=data_format))
+            X_n = activ(conv(X_n, 'c2n', nf=64, rf=4, stride=2, init_scale=np.sqrt(2), data_format=data_format))
+            #X = activ(conv(X, 'c3', nf=64, rf=4, stride=1, init_scale=np.sqrt(2), data_format=data_format))
+
+            X_ego = activ(conv(X_ego, 'c1e', nf=32, rf=8, stride=4, init_scale=np.sqrt(2), data_format=data_format))
+            X_ego = activ(conv(X_ego, 'c2e', nf=64, rf=4, stride=2, init_scale=np.sqrt(2), data_format=data_format))
+            #X = activ(conv(X, 'c3', nf=64, rf=4, stride=1, init_scale=np.sqrt(2), data_format=data_format))
+
+            with tf.variable_scope("augmented1"):
+                X_n = self.augmented_conv2d(X_n, 512, dk=256, dv=256)
+            with tf.variable_scope("augmented2"):
+                X_n = self.augmented_conv2d(X_n, 512, dk=256, dv=256)
+
+            with tf.variable_scope("augmented3"):
+                X_ego = self.augmented_conv2d(X_ego, 512, dk=256, dv=256)
+            with tf.variable_scope("augmented4"):
+                X_ego = self.augmented_conv2d(X_ego, 512, dk=256, dv=256)
+
+            X_n = to2d(X_n)
+            X_ego = to2d(X_ego)
+            mix_other_observations = [X_n, X_ego]
+
+            X = tf.concat(mix_other_observations, axis=1)
+            X = activ(fc(X, 'fc1', nh=hidsize, init_scale=np.sqrt(2)))
+            additional_size = 448
+            X = activ(fc(X, 'fc_additional', nh=additional_size, init_scale=np.sqrt(2)))
+            snext = tf.zeros((sy_nenvs, memsize))
+            mix_timeout = [X]
+
+            Xtout = tf.concat(mix_timeout, axis=1)
+            if extrahid:
+                Xtout = X + activ(fc(Xtout, 'fc2val', nh=additional_size, init_scale=0.1))
+                X     = X + activ(fc(X, 'fc2act', nh=additional_size, init_scale=0.1))
+            pdparam = fc(X, 'pd', nh=pdparamsize, init_scale=0.01)
+            vpred_int   = fc(Xtout, 'vf_int', nh=1, init_scale=0.01)
+            vpred_ext   = fc(Xtout, 'vf_ext', nh=1, init_scale=0.01)
+
+            pdparam = tf.reshape(pdparam, (sy_nenvs, sy_nsteps, pdparamsize))
+            vpred_int = tf.reshape(vpred_int, (sy_nenvs, sy_nsteps))
+            vpred_ext = tf.reshape(vpred_ext, (sy_nenvs, sy_nsteps))
+        return pdparam, vpred_int, vpred_ext, snext
+
+    def define_self_prediction_rew_ego(self, convfeat, rep_size, enlargement):
+        logger.info("Using RND BONUS ****************************************************")
+
+        #RND bonus.
+
+        # Random target network.
+        # The RND and the Predictor network are based on the inputs of the normal frame
+        for ph_k, ph in self.ph_ob.items():
+            if ph_k == 'ego':
+                continue
+            if len(ph.shape.as_list()) == 5:  # B,T,H,W,C
+                logger.info("CnnTarget: using '%s' shape %s as image input" % (ph.name, str(ph.shape)))
+                xr = ph[:,1:]
+                xr = tf.cast(xr, tf.float32)
+                xr = tf.reshape(xr, (-1, *ph.shape.as_list()[-3:]))[:, :, :, -1:]
+                xr = tf.clip_by_value((xr - self.ph_mean) / self.ph_std, -5.0, 5.0)
+
+                xr = tf.nn.leaky_relu(conv(xr, 'c1r', nf=convfeat * 1, rf=8, stride=4, init_scale=np.sqrt(2)))
+                xr = tf.nn.leaky_relu(conv(xr, 'c2r', nf=convfeat * 2 * 1, rf=4, stride=2, init_scale=np.sqrt(2)))
+                # rf=3 in case of 84x84 image else might need to be changed to 2 or 1
+                xr = tf.nn.leaky_relu(conv(xr, 'c3r', nf=convfeat * 2 * 1, rf=2, stride=1, init_scale=np.sqrt(2)))
+                rgbr = [to2d(xr)]
+                X_r = fc(rgbr[0], 'fc1r', nh=rep_size, init_scale=np.sqrt(2))
+
+        # Predictor network.
+        for ph_k, ph in self.ph_ob.items():
+            if ph_k == 'ego':
+                continue
+            if len(ph.shape.as_list()) == 5:  # B,T,H,W,C
+                logger.info("CnnTarget: using '%s' shape %s as image input" % (ph.name, str(ph.shape)))
+                xrp = ph[:,1:]
+                xrp = tf.cast(xrp, tf.float32)
+                xrp = tf.reshape(xrp, (-1, *ph.shape.as_list()[-3:]))[:, :, :, -1:]
+                xrp = tf.clip_by_value((xrp - self.ph_mean) / self.ph_std, -5.0, 5.0)
+
+                xrp = tf.nn.leaky_relu(conv(xrp, 'c1rp_pred', nf=convfeat, rf=8, stride=4, init_scale=np.sqrt(2)))
+                xrp = tf.nn.leaky_relu(conv(xrp, 'c2rp_pred', nf=convfeat * 2, rf=4, stride=2, init_scale=np.sqrt(2)))
+                # rf=3 in case of 84x84 image else might need to be changed to 2 or 1
+                xrp = tf.nn.leaky_relu(conv(xrp, 'c3rp_pred', nf=convfeat * 2, rf=2, stride=1, init_scale=np.sqrt(2)))
+                rgbrp = to2d(xrp)
+                # X_r_hat = tf.nn.relu(fc(rgb[0], 'fc1r_hat1', nh=256 * enlargement, init_scale=np.sqrt(2)))
+                X_r_hat = tf.nn.relu(fc(rgbrp, 'fc1r_hat1_pred', nh=256 * enlargement, init_scale=np.sqrt(2)))
+                X_r_hat = tf.nn.relu(fc(X_r_hat, 'fc1r_hat2_pred', nh=256 * enlargement, init_scale=np.sqrt(2)))
+                X_r_hat = fc(X_r_hat, 'fc1r_hat3_pred', nh=rep_size, init_scale=np.sqrt(2))
+
+        self.feat_var = tf.reduce_mean(tf.nn.moments(X_r, axes=[0])[1])
+        self.max_feat = tf.reduce_max(tf.abs(X_r))
+        self.int_rew = tf.reduce_mean(tf.square(tf.stop_gradient(X_r) - X_r_hat), axis=-1, keep_dims=True)
+        self.int_rew = tf.reshape(self.int_rew, (self.sy_nenvs, self.sy_nsteps - 1))
+
+        targets = tf.stop_gradient(X_r)
+        # self.aux_loss = tf.reduce_mean(tf.square(noisy_targets-X_r_hat))
+        self.aux_loss = tf.reduce_mean(tf.square(targets - X_r_hat), -1)
+        mask = tf.random_uniform(shape=tf.shape(self.aux_loss), minval=0., maxval=1., dtype=tf.float32)
+        mask = tf.cast(mask < self.proportion_of_exp_used_for_predictor_update, tf.float32)
+        self.aux_loss = tf.reduce_sum(mask * self.aux_loss) / tf.maximum(tf.reduce_sum(mask), 1.)
 
     def apply_policy(self, ph_ob, reuse, scope, hidsize, memsize, extrahid, sy_nenvs, sy_nsteps, pdparamsize):
         data_format = 'NHWC'
@@ -104,13 +263,14 @@ class CnnPolicy(StochasticPolicy):
         with tf.variable_scope(scope, reuse=reuse), tf.device('/gpu:0' if yes_gpu else '/cpu:0'):
             X = activ(conv(X, 'c1', nf=32, rf=8, stride=4, init_scale=np.sqrt(2), data_format=data_format))
             X = activ(conv(X, 'c2', nf=64, rf=4, stride=2, init_scale=np.sqrt(2), data_format=data_format))
-            #X = activ(conv(X, 'c3', nf=64, rf=4, stride=1, init_scale=np.sqrt(2), data_format=data_format))
+            if os.environ["EXPERIMENT_LVL"] == "attention" or os.environ["EXPERIMENT_LVL"] == "ego":
+                with tf.variable_scope("augmented1"):
+                    X = self.augmented_conv2d(X, 512, dk=256, dv=256)
 
-            with tf.variable_scope("augmented1"):
-                X = self.augmented_conv2d(X, 512, dk=256, dv=256)
-
-            with tf.variable_scope("augmented2"):
-                X = self.augmented_conv2d(X, 512, dk=256, dv=256)
+                with tf.variable_scope("augmented2"):
+                    X = self.augmented_conv2d(X, 512, dk=256, dv=256)
+            else:
+                X = activ(conv(X, 'c3', nf=64, rf=4, stride=1, init_scale=np.sqrt(2), data_format=data_format))
 
             X = to2d(X)
             mix_other_observations = [X]
@@ -150,8 +310,7 @@ class CnnPolicy(StochasticPolicy):
 
                 xr = tf.nn.leaky_relu(conv(xr, 'c1r', nf=convfeat * 1, rf=8, stride=4, init_scale=np.sqrt(2)))
                 xr = tf.nn.leaky_relu(conv(xr, 'c2r', nf=convfeat * 2 * 1, rf=4, stride=2, init_scale=np.sqrt(2)))
-                # rf=3 in case of 84x84 image else might need to be changed to 2 or 1
-                xr = tf.nn.leaky_relu(conv(xr, 'c3r', nf=convfeat * 2 * 1, rf=2, stride=1, init_scale=np.sqrt(2)))
+                xr = tf.nn.leaky_relu(conv(xr, 'c3r', nf=convfeat * 2 * 1, rf=3, stride=1, init_scale=np.sqrt(2)))
                 rgbr = [to2d(xr)]
                 X_r = fc(rgbr[0], 'fc1r', nh=rep_size, init_scale=np.sqrt(2))
 
@@ -166,8 +325,7 @@ class CnnPolicy(StochasticPolicy):
 
                 xrp = tf.nn.leaky_relu(conv(xrp, 'c1rp_pred', nf=convfeat, rf=8, stride=4, init_scale=np.sqrt(2)))
                 xrp = tf.nn.leaky_relu(conv(xrp, 'c2rp_pred', nf=convfeat * 2, rf=4, stride=2, init_scale=np.sqrt(2)))
-                # rf=3 in case of 84x84 image else might need to be changed to 2 or 1
-                xrp = tf.nn.leaky_relu(conv(xrp, 'c3rp_pred', nf=convfeat * 2, rf=2, stride=1, init_scale=np.sqrt(2)))
+                xrp = tf.nn.leaky_relu(conv(xrp, 'c3rp_pred', nf=convfeat * 2, rf=3, stride=1, init_scale=np.sqrt(2)))
                 rgbrp = to2d(xrp)
                 # X_r_hat = tf.nn.relu(fc(rgb[0], 'fc1r_hat1', nh=256 * enlargement, init_scale=np.sqrt(2)))
                 X_r_hat = tf.nn.relu(fc(rgbrp, 'fc1r_hat1_pred', nh=256 * enlargement, init_scale=np.sqrt(2)))
@@ -252,7 +410,10 @@ class CnnPolicy(StochasticPolicy):
                 if update_obs_stats:
                     raise NotImplementedError
                     ob = ob.astype(np.float32)
-                    ob = ob.reshape(-1, *self.ob_space.shape)
+                    if os.environ["EXPERIMENT_LVL"] == "ego":
+                        ob = ob.reshape(-1, *self.ob_space.spaces['normal'].shape)
+                    else:
+                        ob = ob.reshape(-1, *self.ob_space.shape)
                     self.ob_rms.update(ob)
         # Note: if it fails here with ph vs observations inconsistency, check if you're loading agent from disk.
         # It will use whatever observation spaces saved to disk along with other ctor params.

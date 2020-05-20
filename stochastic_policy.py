@@ -242,7 +242,7 @@ class StochasticPolicy(object):
         self.ph_istate = ph_istate
 
     def ensure_observation_is_dict(self, ob):
-        if self.ph_ob_keys==[None]:
+        if self.ph_ob_keys == [None]:
             return { None: ob }
         else:
             return ob

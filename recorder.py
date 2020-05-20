@@ -61,6 +61,7 @@ class Recorder(object):
     def __init__(self, nenvs, score_multiple=1):
         self.episodes = [defaultdict(list) for _ in range(nenvs)]
         self.total_episodes = 0
+        self.worthy_episodes = 0
         self.filename = self.get_filename()
         #self.dataset = Dataset(self.get_h5filename())
         self.score_multiple = score_multiple
@@ -93,6 +94,7 @@ class Recorder(object):
     def record_episode(self, env_id, info):
         self.total_episodes += 1
         if self.episode_worth_saving(env_id, info):
+            self.worthy_episodes += 1
             episode = {}
             for key in self.episodes[env_id]:
                 episode[key] = np.concatenate(self.episodes[env_id][key])

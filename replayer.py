@@ -23,6 +23,8 @@ class EpisodeIterator(object):
         elif args['filter'] == 'room':
             def cond(info):
                 return any(int(room) in args['room_number'] for room in info['places'])
+        elif args['filter'] == 'n_rooms':
+            cond = lambda info: args['rooms_min'] <= len(info['visited_rooms']) and len(info['visited_rooms']) <= args['rooms_max']
 
         self.filenames = filenames
         self.condition = cond
@@ -47,7 +49,7 @@ class EpisodeIterator(object):
 
             info = episode['info']
             if condition(info):
-                print(self.episode_number)
+                print(f"Episode number: {self.episode_number}")
                 self.episode_number += 1
                 if self.episode_number >= args['skip']:
                     if 'obs' in episode:
@@ -68,7 +70,7 @@ class EpisodeIterator(object):
                             if args['display'] == 'game':
                                 rend = unwrapped_env.render(mode="rgb_array")
                             else:
-                                # this is what the 84x84 representation looks like I think
+                                # black and white representation
                                 rend = np.asarray(ob)[:, :, :1]
                             frames.append(rend)
                             ret += r
@@ -152,7 +154,7 @@ class Animation(object):
 
             self.im = self.axes['obs'].imshow(self.process_frame(self.episode['obs'][0]), cmap='gray')
             for key in self.axes:
-                if key != 'obs':
+                if key != 'obs' and key != 'attention':
                     line, = self.axes[key].plot(self.episode[key], alpha=0.5)
                     dot = matplotlib.patches.Ellipse(xy=(0, 0), width=1, height=0.0001, color='r')
                     self.axes[key].add_artist(dot)
@@ -165,7 +167,7 @@ class Animation(object):
             # update the data
             if self.j == 0:
                 for key in self.axes:
-                    if key != 'obs':
+                    if key != 'obs' and key != 'attention':
                         data = self.episode[key]
                         n_timesteps = len(data)
                         self.lines[key].set_data(range(n_timesteps), data)
@@ -177,7 +179,7 @@ class Animation(object):
                         self.dots[key].width = n_timesteps / 30.
             self.im.set_data(self.process_frame(self.episode['obs'][self.j]))
             for key in self.axes:
-                if key != 'obs':
+                if key != 'obs' and key != 'attention':
                     self.dots[key].center = (self.j, self.episode[key][self.j])
             if not self.pause:
                 self.j += self.delta
@@ -198,12 +200,13 @@ if __name__ == '__main__':
     parser.add_argument('--filter', type=str, default='none')
     parser.add_argument('--rew_min', type=int, default=0)
     parser.add_argument('--rew_max', type=int, default=np.inf)
+    parser.add_argument('--rooms_min', type=int, default=1)
+    parser.add_argument('--rooms_max', type=int, default=np.inf)
     parser.add_argument('--tag', type=str, default=None)
     parser.add_argument('--kind', type=str, default='plot')
     parser.add_argument('--display', type=str, default='game', choices=['game', 'agent'])
     parser.add_argument('--skip', type=int, default=0)
     parser.add_argument('--room_number', type=lambda x: [int(_) for _ in x.split(',')], default=[15])
-
 
 
     args = parser.parse_args().__dict__

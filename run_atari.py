@@ -17,8 +17,17 @@ from vec_env import VecFrameStack
 # import cProfile, tracemalloc
 
 def train(*, env_id, num_env, hps, num_timesteps, seed):
+    experiment = os.environ.get('EXPERIMENT_LVL')
+    if experiment == 'ego':
+        # for the ego experiment we needed a higher intrinsic coefficient
+        hps['int_coeff'] = 3.0
+    if experiment == 'baseline':
+        hps['gamma_ext'] = 0.99
+
+    logger.info("Hyperparameters:")
+    logger.info(hps)
     venv = VecFrameStack(
-        make_atari_env(env_id, num_env, seed, wrapper_kwargs={'ego': True},
+        make_atari_env(env_id, num_env, seed, wrapper_kwargs={},
                        start_index=num_env * MPI.COMM_WORLD.Get_rank(),
                        max_episode_steps=hps.pop('max_episode_steps')),
         hps.pop('frame_stack'))
@@ -34,6 +43,7 @@ def train(*, env_id, num_env, hps, num_timesteps, seed):
     venv.record_obs = True if env_id == 'SolarisNoFrameskip-v4' else False
     ob_space = venv.observation_space
     ac_space = venv.action_space
+
     gamma = hps.pop('gamma')
     policy = {'rnn': CnnGruPolicy,
               'cnn': CnnPolicy}[hps.pop('policy')]
@@ -95,7 +105,7 @@ def train(*, env_id, num_env, hps, num_timesteps, seed):
             #     prev_snap = snapshot
             #     profiler.dump_stats("profile_rnd")
 
-            if (counter % 500) == 0 and save_model:
+            if (counter % 100) == 0 and save_model:
                 agent.save_model(agent.I.step_count)
 
         if agent.I.stats['tcount'] > num_timesteps:
@@ -126,12 +136,13 @@ def main():
     parser.add_argument('--update_ob_stats_from_random_agent', type=int, default=1)
     parser.add_argument('--proportion_of_exp_used_for_predictor_update', type=float, default=1.)
     parser.add_argument('--tag', type=str, default='')
-    parser.add_argument('--policy', type=str, default='rnn', choices=['cnn', 'rnn'])
+    parser.add_argument('--policy', type=str, default='cnn', choices=['cnn', 'rnn'])
     parser.add_argument('--int_coeff', type=float, default=1.)
     parser.add_argument('--ext_coeff', type=float, default=2.)
     parser.add_argument('--dynamics_bonus', type=int, default=0)
     parser.add_argument('--save_model', action='store_true')
     parser.add_argument('--restore_model', action='store_true')
+    parser.add_argument('--experiment', type=str, default='ego', choices=['baseline', 'attention', 'ego'])
 
     args = parser.parse_args()
     logger.configure(dir=logger.get_dir(), format_strs=['stdout', 'log', 'csv'] if MPI.COMM_WORLD.Get_rank() == 0 else [])
@@ -145,6 +156,7 @@ def main():
     seed = 10000 * args.seed + MPI.COMM_WORLD.Get_rank()
     set_global_seeds(seed)
 
+    os.environ["EXPERIMENT_LVL"] = args.experiment
     hps = dict(
         frame_stack=4,
         nminibatches=4,

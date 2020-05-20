@@ -1,9 +1,11 @@
+import os
 import numpy as np
 from collections import deque
 import gym
 from gym import spaces
 import cv2
 from copy import copy
+from baselines import logger
 
 cv2.ocl.setUseOpenCL(False)
 
@@ -53,7 +55,8 @@ class ClipRewardEnv(gym.RewardWrapper):
         """Bin reward to {+1, 0, -1} by its sign."""
         return float(np.sign(reward))
 
-class WarpFrame(gym.ObservationWrapper):
+
+class OldWarpFrame(gym.ObservationWrapper):
     def __init__(self, env):
         """Warp frames to 84x84 as done in the Nature paper and later work."""
         gym.ObservationWrapper.__init__(self, env)
@@ -66,6 +69,84 @@ class WarpFrame(gym.ObservationWrapper):
         frame = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
         frame = cv2.resize(frame, (self.width, self.height), interpolation=cv2.INTER_AREA)
         return frame[:, :, None]
+
+
+class WarpFrame(gym.ObservationWrapper):
+    def __init__(self, env):
+        """Warp frames to 84x84 as done in the Nature paper and later work."""
+        gym.ObservationWrapper.__init__(self, env)
+        self.width = 84
+        self.height = 84
+        self.ego_h = 30
+        self.ego_w = 51
+
+        # https://github.com/openai/gym/blob/master/gym/spaces/dict.py
+        self.observation_space = spaces.Dict({'normal': spaces.Box(low=0, high=255,
+                                                                   shape=(self.height, self.width, 1),
+                                                                   dtype=np.uint8),
+                                              'ego': spaces.Box(low=0, high=255,
+                                                                shape=(self.ego_h, self.ego_w, 1),
+                                                                dtype=np.uint8)})
+        self.lower_color = np.array([199, 71, 71], dtype="uint8")
+        self.upper_color = np.array([201, 73, 73], dtype="uint8")
+
+    def find_character_in_frame(self, frame):
+        mask = cv2.inRange(frame, self.lower_color, self.upper_color)
+        output = cv2.bitwise_and(frame, frame, mask=mask)
+
+        pix_x, pix_y, _ = np.where(output > 0)
+        if pix_x.size != 0:
+            prev_pix_x = pix_x
+            pix_x = pix_x[np.where(pix_x > 19)]
+            pix_y = pix_y[-pix_x.size:]
+
+            # If array is even then median doesn't exist in the array, because it's the average
+            # between the middle twos
+            try:
+                # Very rarely a nan will be received here
+                median_x = int(np.median(pix_x))
+                while median_x not in pix_x:
+                    median_x += 1
+
+                median_y = int(pix_y[np.where(pix_x == median_x)[0][0]])
+            except Exception as e:
+                logger.error("Exception: {}".format(e))
+                logger.error("Pixel x: {}".format(pix_x))
+                logger.error("Pixel y: {}".format(pix_y))
+                logger.error("Previous pixel x: {}".format(prev_pix_x))
+                roi = np.zeros([self.ego_h, self.ego_w, 3], dtype=np.uint8)
+                return roi
+
+        else:
+            median_x = output.shape[0] // 2
+            median_y = output.shape[1] // 2
+
+        low_x = median_x-self.ego_h
+        high_x = median_x+self.ego_h
+        low_y = median_y-self.ego_w
+        high_y = median_y+self.ego_w
+
+        low_x = low_x if low_x > 0 else 0
+        high_x = high_x if high_x < frame.shape[0] else frame.shape[0]
+        low_y = low_y if low_y > 0 else 0
+        high_y = high_y if high_y < frame.shape[1] else frame.shape[1]
+
+        roi = frame[low_x:high_x, low_y:high_y]
+        return roi
+
+    def observation(self, frame):
+        # Ego frame processing
+        ego_frame = self.find_character_in_frame(frame)
+        ego_frame = cv2.cvtColor(ego_frame, cv2.COLOR_RGB2GRAY)
+        ego_frame = cv2.resize(ego_frame, (self.ego_w, self.ego_h), interpolation=cv2.INTER_AREA)
+
+        # Previous 84x84 frame processing
+        frame = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
+        frame = cv2.resize(frame, (self.width, self.height), interpolation=cv2.INTER_AREA)
+
+        res = {'normal': frame[:, :, None],
+               'ego': ego_frame[:, :, None]}
+        return res
 
 class WarpEgo(gym.ObservationWrapper):
     def __init__(self, env):
@@ -268,13 +349,13 @@ def make_atari(env_id, max_episode_steps=4500):
     return env
 
 
-def wrap_deepmind(env, clip_rewards=True, frame_stack=False, scale=False, ego=False):
+def wrap_deepmind(env, clip_rewards=True, frame_stack=False, scale=False):
     """Configure environment for DeepMind-style Atari.
     """
-    if ego:
-        env = WarpEgo(env)
-    else:
+    if os.environ["EXPERIMENT_LVL"] == 'ego':
         env = WarpFrame(env)
+    else:
+        env = OldWarpFrame(env)
 
     if scale:
         env = ScaledFloatFrame(env)

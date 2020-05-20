@@ -230,15 +230,29 @@ class PpoAgent(object):
         #Initializes observation normalization with data from random agent.
         all_ob = []
         for lump in range(self.I.nlump):
-            all_ob.append(self.I.venvs[lump].reset())
+            if os.environ["EXPERIMENT_LVL"] == "ego":
+                # TODO: Don't hardcode this here
+                all_ob.append(self.I.venvs[lump].reset()['normal'])
+            else:
+                all_ob.append(self.I.venvs[lump].reset())
         for step in range(num_timesteps):
             for lump in range(self.I.nlump):
                 acs = np.random.randint(low=0, high=self.ac_space.n, size=(self.I.lump_stride,))
                 self.I.venvs[lump].step_async(acs)
                 ob, _, _, _ = self.I.venvs[lump].step_wait()
-                all_ob.append(ob)
+                if os.environ["EXPERIMENT_LVL"] == "ego":
+                    # TODO: Don't hardcode this here
+                    all_ob.append(ob['normal'])
+                else:
+                    all_ob.append(ob)
+
                 if len(all_ob) % (128 * self.I.nlump) == 0:
-                    ob_ = np.asarray(all_ob).astype(np.float32).reshape((-1, *self.ob_space.shape))
+                    if os.environ["EXPERIMENT_LVL"] == "ego":
+                        # don't need ego ob_space given that ob_rms is used only on rnd
+                        # TODO: Don't hardcode this here
+                        ob_ = np.asarray(all_ob).astype(np.float32).reshape((-1, *self.I.venvs[lump].observation_space.spaces['normal'].shape))
+                    else:
+                        ob_ = np.asarray(all_ob).astype(np.float32).reshape((-1, *self.ob_space.shape))
                     self.stochpol.ob_rms.update(ob_[:,:,:,-1:])
                     all_ob.clear()
 
@@ -357,7 +371,11 @@ class PpoAgent(object):
                      }
 
         if self.I.venvs[0].record_obs:
-            to_record['obs'] = self.I.buf_obs[None]
+            if None in self.I.buf_obs:
+                to_record['obs'] = self.I.buf_obs[None]
+            else:
+                to_record['obs'] = self.I.buf_obs['normal']
+
         self.recorder.record(bufs=to_record,
                              infos=self.I.buf_epinfos)
 
@@ -389,13 +407,14 @@ class PpoAgent(object):
 
         to_record_attention = None
         attention_output = None
-        try:
-            #attention_output = tf.get_default_graph().get_tensor_by_name("ppo/pol/augmented2/attention_output_combined:0")
-            #attention_output = tf.get_default_graph().get_tensor_by_name("ppo/pol/augmented2/attention_output_combined/kernel:0")
-            attention_output = tf.get_default_graph().get_tensor_by_name("ppo/pol/augmented2/attention_output_combined/Conv2D:0")
-        except Exception as e:
-            logger.error("Exception in attention_output: {}".format(e))
-            attention_output = None
+        if os.environ['EXPERIMENT_LVL'] == 'attention' or os.environ['EXPERIMENT_LVL'] == 'ego':
+            try:
+                #attention_output = tf.get_default_graph().get_tensor_by_name("ppo/pol/augmented2/attention_output_combined:0")
+                #attention_output = tf.get_default_graph().get_tensor_by_name("ppo/pol/augmented2/attention_output_combined/kernel:0")
+                attention_output = tf.get_default_graph().get_tensor_by_name("ppo/pol/augmented2/attention_output_combined/Conv2D:0")
+            except Exception as e:
+                logger.error("Exception in attention_output: {}".format(e))
+                attention_output = None
 
         epoch = 0
         start = 0
@@ -406,10 +425,20 @@ class PpoAgent(object):
 
             fd = {ph : buf[mbenvinds] for (ph, buf) in ph_buf}
             fd.update({self.ph_lr : self.lr, self.ph_cliprange : self.cliprange})
-            fd[self.stochpol.ph_ob[None]] = np.concatenate([self.I.buf_obs[None][mbenvinds], self.I.buf_ob_last[None][mbenvinds, None]], 1)
 
-            assert list(fd[self.stochpol.ph_ob[None]].shape) == [self.I.nenvs//self.nminibatches, self.nsteps + 1] + list(self.ob_space.shape), \
+            if None in self.stochpol.ph_ob:
+                fd[self.stochpol.ph_ob[None]] = np.concatenate([self.I.buf_obs[None][mbenvinds], self.I.buf_ob_last[None][mbenvinds, None]], 1)
+                assert list(fd[self.stochpol.ph_ob[None]].shape) == [self.I.nenvs//self.nminibatches, self.nsteps + 1] + list(self.ob_space.shape), \
                 [fd[self.stochpol.ph_ob[None]].shape, [self.I.nenvs//self.nminibatches, self.nsteps + 1] + list(self.ob_space.shape)]
+
+            else:
+                fd[self.stochpol.ph_ob['normal']] = np.concatenate([self.I.buf_obs['normal'][mbenvinds], self.I.buf_ob_last['normal'][mbenvinds, None]], 1)
+                fd[self.stochpol.ph_ob['ego']] = np.concatenate([self.I.buf_obs['ego'][mbenvinds], self.I.buf_ob_last['ego'][mbenvinds, None]], 1)
+
+                assert list(fd[self.stochpol.ph_ob['normal']].shape) == [self.I.nenvs//self.nminibatches, self.nsteps + 1] + list(self.ob_space.spaces['normal'].shape), \
+                [fd[self.stochpol.ph_ob['normal']].shape, [self.I.nenvs//self.nminibatches, self.nsteps + 1] + list(self.ob_space.spaces['normal'].shape)]
+                assert list(fd[self.stochpol.ph_ob['ego']].shape) == [self.I.nenvs//self.nminibatches, self.nsteps + 1] + list(self.ob_space.spaces['ego'].shape), \
+                [fd[self.stochpol.ph_ob['ego']].shape, [self.I.nenvs//self.nminibatches, self.nsteps + 1] + list(self.ob_space.spaces['ego'].shape)]
 
             fd.update({self.stochpol.ph_mean:self.stochpol.ob_rms.mean, self.stochpol.ph_std:self.stochpol.ob_rms.var**0.5})
 
@@ -423,34 +452,13 @@ class PpoAgent(object):
             if attention_output is not None:
                 attn_output = ret[-1]
                 ret = ret[:-1]
-                outshape = list(self.I.buf_obs[None][mbenvinds].shape[:2])+list(attn_output.shape[1:])
+                if None in self.I.buf_obs:
+                    outshape = list(self.I.buf_obs[None][mbenvinds].shape[:2])+list(attn_output.shape[1:])
+                else:
+                    # does not matter if it's normal or ego, the first 2 axes are the same
+                    outshape = list(self.I.buf_obs['normal'][mbenvinds].shape[:2])+list(attn_output.shape[1:])
                 attn_output = np.reshape(attn_output, outshape)
                 attn_output = attn_output[:,:,:,:,:64]
-
-                # attn_output = attn_output[:,:,:,:,:1]
-                # for x in range(attn_output.shape[0]):
-                #     for y in range(attn_output.shape[1]):
-                #         attn_min = np.stack([attn_output[x,y,...,0].min()])
-                #         attn_max = np.stack([attn_output[x,y,...,0].max()])
-                #         attn_output[x,y,...] = (1 * ((attn_output[x,y,...] - attn_min)/(attn_max-attn_min)))
-
-                #         #attn_output[x,y,...] = (255 * ((attn_output[x,y,...] - attn_min)/(attn_max-attn_min)))
-
-                # #((oldval - Min) * (255/(Max-Min)))
-                # for x in range(attn_output.shape[0]):
-                #     for y in range(attn_output.shape[1]):
-                #         attn_min = np.stack([attn_output[x,y,...,0].min(),
-                #                              attn_output[x,y,...,1].min(),
-                #                              attn_output[x,y,...,2].min(),
-                #                              attn_output[x,y,...,3].min()])
-
-                #         attn_max = np.stack([attn_output[x,y,...,0].max(),
-                #                              attn_output[x,y,...,1].max(),
-                #                              attn_output[x,y,...,2].max(),
-                #                              attn_output[x,y,...,3].max()])
-
-                #         #attn_output[x,y,...] = (attn_output[x,y,...] - attn_min) * (255/(attn_max-attn_min))
-                #         attn_output[x,y,...] = (attn_output[x,y,...] - attn_min) / (attn_max-attn_min)
 
             if not self.testing:
                 lossdict = dict(zip([n for n in self.loss_names], ret), axis=0)
@@ -475,11 +483,14 @@ class PpoAgent(object):
                         to_record_attention = np.concatenate([to_record_attention,
                                                               attn_output])
 
-        if to_record_attention is not None:
-            to_record['obs'] = self.I.buf_obs[None]
-            to_record['attention'] = to_record_attention
-        self.recorder.record(bufs=to_record,
-                             infos=self.I.buf_epinfos)
+        # if to_record_attention is not None:
+        #     if None in self.I.buf_obs:
+        #         to_record['obs'] = self.I.buf_obs[None]
+        #     else:
+        #         to_record['obs'] = self.I.buf_obs['normal']
+
+        #     to_record['attention'] = to_record_attention
+
         to_record_attention = None
 
         if self.is_train_leader:
@@ -572,7 +583,12 @@ class PpoAgent(object):
 
             #Calcuate the intrinsic rewards for the rollout.
             fd = {}
-            fd[self.stochpol.ph_ob[None]] = np.concatenate([self.I.buf_obs[None], self.I.buf_ob_last[None][:,None]], 1)
+            if None in self.stochpol.ph_ob:
+                fd[self.stochpol.ph_ob[None]] = np.concatenate([self.I.buf_obs[None], self.I.buf_ob_last[None][:,None]], 1)
+            else:
+                fd[self.stochpol.ph_ob['normal']] = np.concatenate([self.I.buf_obs['normal'], self.I.buf_ob_last['normal'][:,None]], 1)
+                fd[self.stochpol.ph_ob['ego']] = np.concatenate([self.I.buf_obs['ego'], self.I.buf_ob_last['ego'][:,None]], 1)
+
             fd.update({self.stochpol.ph_mean: self.stochpol.ob_rms.mean,
                        self.stochpol.ph_std: self.stochpol.ob_rms.var ** 0.5})
             fd[self.stochpol.ph_ac] = self.I.buf_acs
@@ -580,7 +596,11 @@ class PpoAgent(object):
 
             if not self.update_ob_stats_every_step:
                 #Update observation normalization parameters after the rollout is completed.
-                obs_ = self.I.buf_obs[None].astype(np.float32)
+                if None in self.I.buf_obs:
+                    obs_ = self.I.buf_obs[None].astype(np.float32)
+                else:
+                    # should be normal because ob_rms is for the RND
+                    obs_ = self.I.buf_obs['normal'].astype(np.float32)
                 self.stochpol.ob_rms.update(obs_.reshape((-1, *obs_.shape[2:]))[:,:,:,-1:])
             if not self.testing:
                 update_info = self.update()

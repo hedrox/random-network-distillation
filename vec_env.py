@@ -1,3 +1,4 @@
+import os
 from abc import ABC, abstractmethod
 from multiprocessing import Process, Pipe
 from baselines import logger
@@ -137,20 +138,47 @@ class VecFrameStack(VecEnvWrapper):
     def __init__(self, venv, nstack):
         self.venv = venv
         self.nstack = nstack
+        self.experiment_lvl = os.environ["EXPERIMENT_LVL"]
         wos = venv.observation_space # wrapped ob space
-        low = np.repeat(wos.low, self.nstack, axis=-1)
-        high = np.repeat(wos.high, self.nstack, axis=-1)
-        self.stackedobs = np.zeros((venv.num_envs,)+low.shape, low.dtype)
-        observation_space = spaces.Box(low=low, high=high, dtype=venv.observation_space.dtype)
+        if isinstance(wos, spaces.Box):
+            low = np.repeat(wos.low, self.nstack, axis=-1)
+            high = np.repeat(wos.high, self.nstack, axis=-1)
+            self.stackedobs = np.zeros((venv.num_envs,)+low.shape, low.dtype)
+            observation_space = spaces.Box(low=low, high=high, dtype=venv.observation_space.dtype)
+        else:
+            low_normal = np.repeat(wos.spaces['normal'].low, self.nstack, axis=-1)
+            low_ego = np.repeat(wos.spaces['ego'].low, self.nstack, axis=-1)
+            high_normal = np.repeat(wos.spaces['normal'].high, self.nstack, axis=-1)
+            high_ego = np.repeat(wos.spaces['ego'].high, self.nstack, axis=-1)
+
+            self.stackedobs = {'normal': np.zeros((venv.num_envs,)+low_normal.shape, low_normal.dtype),
+                               'ego': np.zeros((venv.num_envs,)+low_ego.shape, low_ego.dtype)}
+
+            observation_space = spaces.Dict({'normal': spaces.Box(low=low_normal, high=high_normal,
+                                                                  dtype=venv.observation_space.spaces['normal'].dtype),
+                                             'ego': spaces.Box(low=low_ego, high=high_ego,
+                                                                  dtype=venv.observation_space.spaces['ego'].dtype)})
+
         VecEnvWrapper.__init__(self, venv, observation_space=observation_space)
 
     def step_wait(self):
         obs, rews, news, infos = self.venv.step_wait()
-        self.stackedobs = np.roll(self.stackedobs, shift=-1, axis=-1)
-        for (i, new) in enumerate(news):
-            if new:
-                self.stackedobs[i] = 0
-        self.stackedobs[..., -obs.shape[-1]:] = obs
+        if self.experiment_lvl == 'ego':
+            self.stackedobs['normal'] = np.roll(self.stackedobs['normal'], shift=-1, axis=-1)
+            self.stackedobs['ego'] = np.roll(self.stackedobs['ego'], shift=-1, axis=-1)
+            for (i, new) in enumerate(news):
+                if new:
+                    self.stackedobs['normal'][i] = 0
+                    self.stackedobs['ego'][i] = 0
+
+            self.stackedobs['normal'][..., -obs['normal'].shape[-1]:] = obs['normal']
+            self.stackedobs['ego'][..., -obs['ego'].shape[-1]:] = obs['ego']
+        else:
+            self.stackedobs = np.roll(self.stackedobs, shift=-1, axis=-1)
+            for (i, new) in enumerate(news):
+                if new:
+                    self.stackedobs[i] = 0
+            self.stackedobs[..., -obs.shape[-1]:] = obs
         return self.stackedobs, rews, news, infos
 
     def reset(self):
@@ -158,51 +186,55 @@ class VecFrameStack(VecEnvWrapper):
         Reset all environments
         """
         obs = self.venv.reset()
-        self.stackedobs[...] = 0
-        self.stackedobs[..., -obs.shape[-1]:] = obs
+        if self.experiment_lvl == 'ego':
+            self.stackedobs['normal'][...] = 0
+            self.stackedobs['ego'][...] = 0
+
+            self.stackedobs['normal'][..., -obs['normal'].shape[-1]:] = obs['normal']
+            self.stackedobs['ego'][..., -obs['ego'].shape[-1]:] = obs['ego']
+        else:
+            self.stackedobs[...] = 0
+            self.stackedobs[..., -obs.shape[-1]:] = obs
         return self.stackedobs
 
     def close(self):
         self.venv.close()
 
 
-class VecFrameStack(VecEnvWrapper):
-    """
-    Vectorized environment base class
-    """
-    def __init__(self, venv, nstack):
-        self.venv = venv
-        self.nstack = nstack
-        wos = venv.observation_space # wrapped ob space
-        low = np.repeat(wos.low, self.nstack, axis=-1)
-        high = np.repeat(wos.high, self.nstack, axis=-1)
-        self.stackedobs = np.zeros((venv.num_envs,)+low.shape, low.dtype)
-        observation_space = spaces.Box(low=low, high=high, dtype=venv.observation_space.dtype)
-        VecEnvWrapper.__init__(self, venv, observation_space=observation_space)
+# class VecFrameStack(VecEnvWrapper):
+#     """
+#     Vectorized environment base class
+#     """
+#     def __init__(self, venv, nstack):
+#         self.venv = venv
+#         self.nstack = nstack
+#         wos = venv.observation_space # wrapped ob space
+#         low = np.repeat(wos.low, self.nstack, axis=-1)
+#         high = np.repeat(wos.high, self.nstack, axis=-1)
+#         self.stackedobs = np.zeros((venv.num_envs,)+low.shape, low.dtype)
+#         observation_space = spaces.Box(low=low, high=high, dtype=venv.observation_space.dtype)
+#         VecEnvWrapper.__init__(self, venv, observation_space=observation_space)
 
-    def step_wait(self):
-        obs, rews, news, infos = self.venv.step_wait()
-        self.stackedobs = np.roll(self.stackedobs, shift=-1, axis=-1)
-        for (i, new) in enumerate(news):
-            if new:
-                self.stackedobs[i] = 0
-        self.stackedobs[..., -obs.shape[-1]:] = obs
-        return self.stackedobs, rews, news, infos
+#     def step_wait(self):
+#         obs, rews, news, infos = self.venv.step_wait()
+#         self.stackedobs = np.roll(self.stackedobs, shift=-1, axis=-1)
+#         for (i, new) in enumerate(news):
+#             if new:
+#                 self.stackedobs[i] = 0
+#         self.stackedobs[..., -obs.shape[-1]:] = obs
+#         return self.stackedobs, rews, news, infos
 
-    def reset(self):
-        """
-        Reset all environments
-        """
-        obs = self.venv.reset()
-        self.stackedobs[...] = 0
-        self.stackedobs[..., -obs.shape[-1]:] = obs
-        return self.stackedobs
+#     def reset(self):
+#         """
+#         Reset all environments
+#         """
+#         obs = self.venv.reset()
+#         self.stackedobs[...] = 0
+#         self.stackedobs[..., -obs.shape[-1]:] = obs
+#         return self.stackedobs
 
-    def close(self):
-        self.venv.close()
-
-
-
+#     def close(self):
+#         self.venv.close()
 
 
 def worker(remote, parent_remote, env_fn_wrapper):
@@ -246,6 +278,7 @@ class SubprocVecEnv(VecEnv):
         for remote in self.work_remotes:
             remote.close()
 
+        self.experiment_lvl = os.environ["EXPERIMENT_LVL"]
         self.remotes[0].send(('get_spaces', None))
         observation_space, action_space = self.remotes[0].recv()
         VecEnv.__init__(self, len(env_fns), observation_space, action_space)
@@ -257,19 +290,51 @@ class SubprocVecEnv(VecEnv):
 
     def step_wait(self):
         results = [remote.recv() for remote in self.remotes]
+
         self.waiting = False
         obs, rews, dones, infos = zip(*results)
-        return np.stack(obs), np.stack(rews), np.stack(dones), infos
+        if self.experiment_lvl == 'ego':
+            normal = []
+            ego = []
+            for ob in obs:
+                normal.append(ob['normal'])
+                ego.append(ob['ego'])
+
+            observation = {'normal': np.stack(normal),
+                           'ego': np.stack(ego)}
+        else:
+            observation = np.stack(obs)
+        return observation, np.stack(rews), np.stack(dones), infos
 
     def reset(self):
         for remote in self.remotes:
             remote.send(('reset', None))
-        return np.stack([remote.recv() for remote in self.remotes])
+        if self.experiment_lvl == 'ego':
+            normal = []
+            ego = []
+            for remote in self.remotes:
+                rem = remote.recv()
+                normal.append(rem['normal'])
+                ego.append(rem['ego'])
+            res = {'normal': np.stack(normal), 'ego': np.stack(ego)}
+        else:
+            res = np.stack([remote.recv() for remote in self.remotes])
+        return res
 
     def reset_task(self):
         for remote in self.remotes:
             remote.send(('reset_task', None))
-        return np.stack([remote.recv() for remote in self.remotes])
+        if self.experiment_lvl == 'ego':
+            normal = []
+            ego = []
+            for remote in self.remotes:
+                rem = remote.recv()
+                normal.append(rem['normal'])
+                ego.append(rem['ego'])
+            res = {'normal': np.stack(normal), 'ego': np.stack(ego)}
+        else:
+            res = np.stack([remote.recv() for remote in self.remotes])
+        return res
 
     def close(self):
         if self.closed:
@@ -286,7 +351,15 @@ class SubprocVecEnv(VecEnv):
     def render(self, mode='human'):
         for pipe in self.remotes:
             pipe.send(('render', None))
-        imgs = [pipe.recv() for pipe in self.remotes]
+        if self.experiment_lvl == 'ego':
+            normal = []
+            for pipe in self.remotes:
+                res = pipe.recv()
+                normal.append(res[0]['normal'])
+
+            imgs = np.stack(normal)
+        else:
+            imgs = [pipe.recv() for pipe in self.remotes]
         bigimg = tile_images(imgs)
         if mode == 'human':
             import cv2

@@ -20,17 +20,30 @@ retextmean, retextstd, retintmean, retintstd, rewintmean_norm, rewintmean_unnorm
 vpredextmean, vpredintmean are interesting metrics
 """
 
-data1.plot(x='tcount', y='rewtotal', ax=axes[0,0], color='blue')
-data2.plot(x='tcount', y='rewtotal', ax=axes[0,0], color='red')
+fig.suptitle("Montezuma's Revenge Ego vs AA-RND", fontsize=10,y=0.9,x=0.51)
+data1.plot(x='tcount', y='rewtotal', ax=axes[0,0], color='blue', label='Ego RND')
+data2.plot(x='tcount', y='rewtotal', ax=axes[0,0], color='red', label='AA-RND')
+axes[0,0].set_xlabel('timesteps')
+axes[0,0].set_ylabel('total rewards')
 
-data1.plot(x='tcount', y='n_rooms', ax=axes[0,1], color='blue')
-data2.plot(x='tcount', y='n_rooms', ax=axes[0,1], color='red')
 
-data1.plot(x='tcount', y='eprew', ax=axes[1,0], color='blue')
-data2.plot(x='tcount', y='eprew', ax=axes[1,0], color='red')
+data1.plot(x='tcount', y='n_rooms', ax=axes[0,1], color='blue', label='Ego RND')
+data2.plot(x='tcount', y='n_rooms', ax=axes[0,1], color='red', label='AA-RND')
+axes[0,1].set_xlabel('timesteps')
+axes[0,1].set_ylabel('nr rooms')
 
-data1.plot(x='tcount', y='best_ret', ax=axes[1,1], color='blue')
-data2.plot(x='tcount', y='best_ret', ax=axes[1,1], color='red')
+
+data1.plot(x='tcount', y='eprew', ax=axes[1,0], color='blue', label='Ego RND')
+data2.plot(x='tcount', y='eprew', ax=axes[1,0], color='red', label='AA-RND')
+axes[1,0].set_xlabel('timesteps')
+axes[1,0].set_ylabel('episode rewards')
+
+
+data1.plot(x='tcount', y='best_ret', ax=axes[1,1], color='blue', label='Ego RND')
+data2.plot(x='tcount', y='best_ret', ax=axes[1,1], color='red', label='AA-RND')
+axes[1,1].set_xlabel('timesteps')
+axes[1,1].set_ylabel('best return')
+
 
 fig.show()
 plt.show()
