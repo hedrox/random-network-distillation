@@ -643,7 +643,7 @@ class PpoAgent(object):
 
                 self.I.statlists['eplen'].append(epinfo['l'])
                 self.I.stats['epcount'] += 1
-                self.I.stats['tcount'] += epinfo['l']
+                self.I.stats['tcount'] += epinfo['l'] # number of timesteps(frames) in the environment
                 self.I.stats['rewtotal'] += epinfo['r']
                 # self.I.stats["best_ext_ret"] = self.best_ret
 

@@ -21,8 +21,6 @@ def train(*, env_id, num_env, hps, num_timesteps, seed):
     if experiment == 'ego':
         # for the ego experiment we needed a higher intrinsic coefficient
         hps['int_coeff'] = 3.0
-    if experiment == 'baseline':
-        hps['gamma_ext'] = 0.99
 
     logger.info("Hyperparameters:")
     logger.info(hps)
