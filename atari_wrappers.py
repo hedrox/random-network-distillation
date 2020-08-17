@@ -70,25 +70,16 @@ class OldWarpFrame(gym.ObservationWrapper):
         frame = cv2.resize(frame, (self.width, self.height), interpolation=cv2.INTER_AREA)
         return frame[:, :, None]
 
-
-class WarpFrame(gym.ObservationWrapper):
-    def __init__(self, env):
-        """Warp frames to 84x84 as done in the Nature paper and later work."""
-        gym.ObservationWrapper.__init__(self, env)
-        self.width = 84
-        self.height = 84
+class EgoFrame:
+    def __init__(self):
         self.ego_h = 30
         self.ego_w = 51
 
-        # https://github.com/openai/gym/blob/master/gym/spaces/dict.py
-        self.observation_space = spaces.Dict({'normal': spaces.Box(low=0, high=255,
-                                                                   shape=(self.height, self.width, 1),
-                                                                   dtype=np.uint8),
-                                              'ego': spaces.Box(low=0, high=255,
-                                                                shape=(self.ego_h, self.ego_w, 1),
-                                                                dtype=np.uint8)})
+class MontezumaEgoFrame(EgoFrame):
+    def __init__(self):
         self.lower_color = np.array([199, 71, 71], dtype="uint8")
         self.upper_color = np.array([201, 73, 73], dtype="uint8")
+        super(MontezumaEgoFrame, self).__init__()
 
     def find_character_in_frame(self, frame):
         mask = cv2.inRange(frame, self.lower_color, self.upper_color)
@@ -134,11 +125,218 @@ class WarpFrame(gym.ObservationWrapper):
         roi = frame[low_x:high_x, low_y:high_y]
         return roi
 
+
+class GravitarEgoFrame(EgoFrame):
+    def __init__(self):
+        self.lower_color = np.array([98, 180, 215], dtype="uint8")
+        self.upper_color = np.array([105, 186, 220], dtype="uint8")
+        super(GravitarEgoFrame, self).__init__()
+
+    def find_character_in_frame(self, frame):
+        mask = cv2.inRange(frame, self.lower_color, self.upper_color)
+        output = cv2.bitwise_and(frame, frame, mask=mask)
+
+        pix_x, pix_y, _ = np.where(output > 0)
+        if pix_x.size != 0:
+            pix_x = pix_x[np.where(pix_x > 23)]
+        if pix_x.size != 0:
+            # In this case, the agents lives are blue
+            prev_pix_x = pix_x
+            pix_y = pix_y[-pix_x.size:]
+
+            # If array is even then median doesn't exist in the array, because it's the average
+            # between the middle twos
+            try:
+                median_x = int(np.median(pix_x))
+                while median_x not in pix_x:
+                    median_x += 1
+
+                median_y = int(pix_y[np.where(pix_x == median_x)[0][0]])
+            except Exception as e:
+                """
+                The agent can transform into a sort of parachute, this are the color ranges
+                This case can also happen as the agent dies it disappears from the screen
+                """
+                mask = cv2.inRange(frame,
+                                   np.array([250, 181, 215], dtype="uint8"),
+                                   np.array([254, 185, 219], dtype="uint8"))
+                output = cv2.bitwise_and(frame, frame, mask=mask)
+
+                pix_x, pix_y, _ = np.where(output > 0)
+                if pix_x.size != 0:
+                    try:
+                        median_x = int(np.median(pix_x))
+                        while median_x not in pix_x:
+                            median_x += 1
+
+                        median_y = int(pix_y[np.where(pix_x == median_x)[0][0]])
+                    except Exception as e:
+                        roi = np.zeros([self.ego_h, self.ego_w, 3], dtype=np.uint8)
+                        return roi
+                else:
+                    roi = np.zeros([self.ego_h, self.ego_w, 3], dtype=np.uint8)
+                    return roi
+
+        else:
+            """
+            In this case, the agents lives are another color
+            The agent can transform into a sort of parachute, this are the color ranges
+            This case can also happen as the agent dies it disappears from the screen
+            """
+            mask = cv2.inRange(frame,
+                               np.array([250, 181, 215], dtype="uint8"),
+                               np.array([254, 185, 219], dtype="uint8"))
+            output = cv2.bitwise_and(frame, frame, mask=mask)
+
+            pix_x, pix_y, _ = np.where(output > 0)
+            if pix_x.size != 0:
+                try:
+                    # Very rarely a nan will be received here
+                    median_x = int(np.median(pix_x))
+                    while median_x not in pix_x:
+                        median_x += 1
+
+                    median_y = int(pix_y[np.where(pix_x == median_x)[0][0]])
+                except Exception as e:
+                    roi = np.zeros([self.ego_h, self.ego_w, 3], dtype=np.uint8)
+                    return roi
+            else:
+                roi = np.zeros([self.ego_h, self.ego_w, 3], dtype=np.uint8)
+                return roi
+
+        low_x = median_x-self.ego_h
+        high_x = median_x+self.ego_h
+        low_y = median_y-self.ego_w
+        high_y = median_y+self.ego_w
+
+        low_x = low_x if low_x > 0 else 0
+        high_x = high_x if high_x < frame.shape[0] else frame.shape[0]
+        low_y = low_y if low_y > 0 else 0
+        high_y = high_y if high_y < frame.shape[1] else frame.shape[1]
+
+        roi = frame[low_x:high_x, low_y:high_y]
+        return roi
+
+
+class PitfallEgoFrame(EgoFrame):
+    def __init__(self):
+        self.lower_color = np.array([226, 109, 109], dtype="uint8")
+        self.upper_color = np.array([230, 114, 114], dtype="uint8")
+        super(PitfallEgoFrame, self).__init__()
+
+    def find_character_in_frame(self, frame):
+        mask = cv2.inRange(frame, self.lower_color, self.upper_color)
+        output = cv2.bitwise_and(frame, frame, mask=mask)
+
+        pix_x, pix_y, _ = np.where(output > 0)
+        if pix_x.size != 0:
+            # If array is even then median doesn't exist in the array, because it's the average
+            # between the middle twos
+            try:
+                # Very rarely a nan will be received here
+                median_x = int(np.median(pix_x))
+                while median_x not in pix_x:
+                    median_x += 1
+
+                median_y = int(pix_y[np.where(pix_x == median_x)[0][0]])
+            except Exception as e:
+                roi = np.zeros([self.ego_h, self.ego_w, 3], dtype=np.uint8)
+                return roi
+
+        else:
+            # We try to find the agent green torso
+            mask = cv2.inRange(frame,
+                               np.array([90, 184, 90], dtype="uint8"),
+                               np.array([94, 188, 94], dtype="uint8"))
+            output = cv2.bitwise_and(frame, frame, mask=mask)
+
+            pix_x, pix_y, _ = np.where(output > 0)
+            if pix_x.size != 0:
+                try:
+                    # Very rarely a nan will be received here
+                    median_x = int(np.median(pix_x))
+                    while median_x not in pix_x:
+                        median_x += 1
+
+                    median_y = int(pix_y[np.where(pix_x == median_x)[0][0]])
+                except Exception as e:
+                    roi = np.zeros([self.ego_h, self.ego_w, 3], dtype=np.uint8)
+                    return roi
+
+            else:
+                # We try to find the legs
+                mask = cv2.inRange(frame,
+                                   np.array([51, 93, 22], dtype="uint8"),
+                                   np.array([55, 97, 26], dtype="uint8"))
+                output = cv2.bitwise_and(frame, frame, mask=mask)
+
+                pix_x, pix_y, _ = np.where(output > 0)
+                if pix_x.size != 0:
+                    pix_x = pix_x[np.where(pix_x > 64)]
+                if pix_x.size != 0:
+                    pix_y = pix_y[-pix_x.size:]
+                    try:
+                        # Very rarely a nan will be received here
+                        median_x = int(np.median(pix_x))
+                        while median_x not in pix_x:
+                            median_x += 1
+
+                        median_y = int(pix_y[np.where(pix_x == median_x)[0][0]])
+                    except Exception as e:
+                        roi = np.zeros([self.ego_h, self.ego_w, 3], dtype=np.uint8)
+                        return roi
+                else:
+                    # The agent is dead
+                    roi = np.zeros([self.ego_h, self.ego_w, 3], dtype=np.uint8)
+                    return roi
+
+
+        low_x = median_x-self.ego_h
+        high_x = median_x+self.ego_h
+        low_y = median_y-self.ego_w
+        high_y = median_y+self.ego_w
+
+        low_x = low_x if low_x > 0 else 0
+        high_x = high_x if high_x < frame.shape[0] else frame.shape[0]
+        low_y = low_y if low_y > 0 else 0
+        high_y = high_y if high_y < frame.shape[1] else frame.shape[1]
+
+        roi = frame[low_x:high_x, low_y:high_y]
+        return roi
+
+
+class WarpFrame(gym.ObservationWrapper):
+    def __init__(self, env):
+        """Warp frames to 84x84 as done in the Nature paper and later work."""
+        gym.ObservationWrapper.__init__(self, env)
+        self.width = 84
+        self.height = 84
+
+        if env.unwrapped.spec.id == 'MontezumaRevengeNoFrameskip-v4':
+            self.ego_game = MontezumaEgoFrame()
+        elif env.unwrapped.spec.id == 'GravitarNoFrameskip-v4':
+            self.ego_game = GravitarEgoFrame()
+        elif env.unwrapped.spec.id == 'PitfallNoFrameskip-v4':
+            self.ego_game = PitfallEgoFrame()
+        else:
+            raise Exception("Ego motion not supported for env: {env}")
+
+        # https://github.com/openai/gym/blob/master/gym/spaces/dict.py
+        self.observation_space = spaces.Dict({'normal': spaces.Box(low=0, high=255,
+                                                                   shape=(self.height, self.width, 1),
+                                                                   dtype=np.uint8),
+                                              'ego': spaces.Box(low=0, high=255,
+                                                                shape=(self.ego_game.ego_h,
+                                                                       self.ego_game.ego_w,
+                                                                       1),
+                                                                dtype=np.uint8)})
+
     def observation(self, frame):
         # Ego frame processing
-        ego_frame = self.find_character_in_frame(frame)
+        ego_frame = self.ego_game.find_character_in_frame(frame)
         ego_frame = cv2.cvtColor(ego_frame, cv2.COLOR_RGB2GRAY)
-        ego_frame = cv2.resize(ego_frame, (self.ego_w, self.ego_h), interpolation=cv2.INTER_AREA)
+        ego_frame = cv2.resize(ego_frame, (self.ego_game.ego_w, self.ego_game.ego_h),
+                               interpolation=cv2.INTER_AREA)
 
         # Previous 84x84 frame processing
         frame = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
@@ -352,7 +550,7 @@ def make_atari(env_id, max_episode_steps=4500):
 def wrap_deepmind(env, clip_rewards=True, frame_stack=False, scale=False):
     """Configure environment for DeepMind-style Atari.
     """
-    if os.environ["EXPERIMENT_LVL"] == 'ego':
+    if os.environ.get('EXPERIMENT_LVL') == 'ego':
         env = WarpFrame(env)
     else:
         env = OldWarpFrame(env)

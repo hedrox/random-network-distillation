@@ -115,7 +115,7 @@ def train(*, env_id, num_env, hps, num_timesteps, seed):
 def add_env_params(parser):
     parser.add_argument('--env', help='environment ID', default='MontezumaRevengeNoFrameskip-v4',
                         choices=['MontezumaRevengeNoFrameskip-v4', 'GravitarNoFrameskip-v4',
-                                 'VentureNoFrameskip-v4'])
+                                 'VentureNoFrameskip-v4', 'PitfallNoFrameskip-v4'])
     parser.add_argument('--seed', help='RNG seed', type=int, default=0)
     parser.add_argument('--max_episode_steps', type=int, default=4500)
 
