@@ -2,6 +2,9 @@ import numpy as np
 import pandas as pd
 import argparse
 
+from tqdm import tqdm
+
+
 parser = argparse.ArgumentParser()
 parser.add_argument("model1_path", type=str, help="Path to the progress.csv of the first")
 parser.add_argument("model2_path", type=str, help="Path to the progress.csv of the second")
@@ -29,7 +32,7 @@ rooms = format_rooms(data_csv1.rooms.values[-1])
 for r in rooms:
     visited_rooms.add(r)
 
-for row in data_csv2.values:
+for row in tqdm(data_csv2.values):
     reward = row[43]
     if pd.isna(reward):
         continue
